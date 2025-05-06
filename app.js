@@ -31,11 +31,15 @@ app.set('views', path.join(__dirname, 'views'));
 // Static files
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Original routes
+// Original routes (for backward compatibility)
 app.use('/', require('./routes/auth'));
-app.use('/webhook', require('./routes/webhook')); // Keep for backward compatibility
+app.use('/webhook', require('./routes/webhook')); 
 
-// Dynamically load client-specific webhook routes
+// Explicitly register known client routes
+app.use('/clients/barbershop/webhook', require('./routes/clients/barbershop/webhook'));
+app.use('/clients/justin/webhook', require('./routes/clients/justin/webhook'));
+
+// Dynamically load any additional client-specific webhook routes
 const clientsDir = path.join(__dirname, 'routes', 'clients');
 
 // Check if the clients directory exists
@@ -45,12 +49,14 @@ if (fs.existsSync(clientsDir)) {
     return fs.statSync(path.join(clientsDir, file)).isDirectory();
   });
 
-  // Register each client's webhook routes
+  // Register each client's webhook routes (skipping the ones we explicitly registered)
   clients.forEach(client => {
-    const webhookPath = path.join(clientsDir, client, 'webhook.js');
-    if (fs.existsSync(webhookPath)) {
-      console.log(`Loading webhook routes for client: ${client}`);
-      app.use(`/clients/${client}/webhook`, require(webhookPath));
+    if (client !== 'barbershop' && client !== 'justin') {
+      const webhookPath = path.join(clientsDir, client, 'webhook.js');
+      if (fs.existsSync(webhookPath)) {
+        console.log(`Loading webhook routes for client: ${client}`);
+        app.use(`/clients/${client}/webhook`, require(webhookPath));
+      }
     }
   });
 }
@@ -72,4 +78,6 @@ app.use((err, req, res, next) => {
 // Start server
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
+  console.log(`- Barbershop webhook: http://localhost:${PORT}/clients/barbershop/webhook`);
+  console.log(`- Justin webhook: http://localhost:${PORT}/clients/justin/webhook`);
 });
