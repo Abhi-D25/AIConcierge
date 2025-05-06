@@ -290,19 +290,58 @@ function findAvailableSlots(events, startTime, endTime, duration) {
 
 // Get client by phone number
 router.get('/get-client', async (req, res) => {
-  const { phoneNumber } = req.query;
+  const { phone } = req.query;
   
-  if (!phoneNumber) {
+  if (!phone) {
     return res.status(400).json({ success: false, error: 'Missing phone number' });
   }
   
-  const client = await clientOps.getByPlatformId(phoneNumber, 'phone');
-  
-  return res.status(200).json({
-    success: true,
-    found: !!client,
-    client: client
-  });
+  try {
+    // Get client info by phone number (simplified)
+    const { data: client, error } = await supabase
+      .from('clients')
+      .select(`
+        *,
+        preferred_barber:barbers(id, name, phone_number)
+      `)
+      .eq('phone_number', phone)
+      .single();
+    
+    if (error && error.code !== 'PGRST116') {
+      console.error('Error fetching client:', error);
+      return res.status(500).json({ success: false, error: error.message });
+    }
+    
+    // Get latest appointment if any
+    let latestAppointment = null;
+    if (client) {
+      const { data: appointments, error: apptError } = await supabase
+        .from('appointments')
+        .select('id, start_time, google_calendar_event_id, service_type')
+        .eq('client_phone', phone)
+        .order('start_time', { ascending: false })
+        .limit(1);
+
+      if (!apptError && appointments && appointments.length > 0) {
+        latestAppointment = appointments[0];
+      }
+    }
+    
+    return res.status(200).json({
+      success: true,
+      found: !!client,
+      client: client || null,
+      barber: {
+        id: process.env.JUSTIN_BARBER_ID,
+        name: "Justin",
+        phone: "+19727541499" || ""
+      },
+      latestAppointment
+    });
+  } catch (e) {
+    console.error('Error in get-client:', e);
+    return res.status(500).json({ success: false, error: e.message });
+  }
 });
 
 // Create client for Justin
