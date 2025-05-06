@@ -1,7 +1,11 @@
 const express = require('express');
 const router = express.Router();
 const { google } = require('googleapis');
-const { barberOps, clientOps, appointmentOps, conversationOps, supabase } = require('../../../utils/supabase/base.js');
+const { createSupabaseClient, createClientOperations } = require('../../../utils/supabase/base');
+const supabaseUrl = process.env.BARBERSHOP_SUPABASE_URL || process.env.SUPABASE_URL;
+const supabaseKey = process.env.BARBERSHOP_SUPABASE_KEY || process.env.SUPABASE_KEY;
+const supabase = createSupabaseClient(supabaseUrl, supabaseKey);
+const { barberOps, clientOps, appointmentOps, conversationOps } = createClientOperations(supabase);
 
 const createOAuth2Client = (refreshToken) => {
   const oauth2Client = new google.auth.OAuth2(
