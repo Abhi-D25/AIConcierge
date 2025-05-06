@@ -21,25 +21,34 @@ const createJustinOAuth2Client = async () => {
 // Justin's appointment endpoint
 router.post('/appointment', async (req, res) => {
   const {
-    clientIdentifier,
-    platform,
+    clientPhone,
     clientName,
     serviceType = 'haircut',
     startDateTime,
     duration = 30,
-    action = 'create'
+    preferredBarberId,
+    eventId,
+    newStartDateTime,
+    isRescheduling = false,
+    isCancelling = false
   } = req.body;
   
   // Validate required fields
-  if (!clientIdentifier || !platform) {
+  if (!clientPhone) {
     return res.status(400).json({
       success: false,
-      error: 'Client identifier and platform are required'
+      error: 'Client phone number is required'
     });
   }
   
-  // Validate Thursday constraint for creating appointments
-  if (!config.isValidThursdayTime(startDateTime) && action === 'create') {
+  // Determine the action based on the flags
+  let action = 'create';
+  if (isRescheduling) action = 'reschedule';
+  if (isCancelling) action = 'cancel';
+  
+  // For creation and rescheduling, validate Thursday constraint
+  if ((action === 'create' || action === 'reschedule') && 
+      !config.isValidThursdayTime(action === 'reschedule' ? newStartDateTime : startDateTime)) {
     return res.status(400).json({
       success: false,
       error: 'Justin only works Thursdays 1-5 PM'
@@ -50,7 +59,8 @@ router.post('/appointment', async (req, res) => {
     const oauth2Client = await createJustinOAuth2Client();
     const calendar = google.calendar({ version: 'v3', auth: oauth2Client });
     
-    const startTime = new Date(startDateTime);
+    // Use appropriate start time based on action
+    const startTime = new Date(action === 'reschedule' ? newStartDateTime : startDateTime);
     const endTime = new Date(startTime.getTime() + (duration * 60000));
     
     let result;
@@ -59,7 +69,7 @@ router.post('/appointment', async (req, res) => {
       case 'create':
         const eventDetails = {
           summary: `${serviceType}: ${clientName}`,
-          description: `Client: ${clientName}\nPlatform: ${platform}\nID: ${clientIdentifier}`,
+          description: `Client: ${clientName}\nPhone: ${clientPhone}\nBarber: ${preferredBarberId || 'JUSTIN_BARBER_ID'}`,
           start: { dateTime: startTime.toISOString(), timeZone: config.calendar.timeZone },
           end: { dateTime: endTime.toISOString(), timeZone: config.calendar.timeZone }
         };
@@ -72,13 +82,14 @@ router.post('/appointment', async (req, res) => {
         
         // Store in DB
         await appointmentOps.create({
-          client_identifier: clientIdentifier,
-          platform: platform,
+          client_identifier: clientPhone,
+          platform: 'phone',
           service_type: serviceType,
           start_time: startTime.toISOString(),
           end_time: endTime.toISOString(),
           google_calendar_event_id: event.data.id,
-          client_name: clientName
+          client_name: clientName,
+          barber_id: preferredBarberId || 'JUSTIN_BARBER_ID'
         });
         
         result = { 
@@ -90,7 +101,7 @@ router.post('/appointment', async (req, res) => {
         break;
         
       case 'cancel':
-        if (!req.body.eventId) {
+        if (!eventId) {
           return res.status(400).json({
             success: false,
             error: 'Event ID is required for cancellation'
@@ -100,46 +111,38 @@ router.post('/appointment', async (req, res) => {
         // Cancel in Google Calendar
         await calendar.events.delete({
           calendarId: config.calendar.calendarId,
-          eventId: req.body.eventId,
+          eventId: eventId,
           sendUpdates: 'all'
         });
         
         // Delete from database
-        await appointmentOps.cancelAppointment(req.body.eventId);
+        await appointmentOps.cancelAppointment(eventId);
         
         result = {
           success: true,
           action: 'cancel',
-          eventId: req.body.eventId
+          eventId: eventId
         };
         break;
         
       case 'reschedule':
-        if (!req.body.eventId) {
+        if (!eventId || !newStartDateTime) {
           return res.status(400).json({
             success: false,
-            error: 'Event ID is required for rescheduling'
-          });
-        }
-        
-        // Validate the new time for Thursday constraint
-        if (!config.isValidThursdayTime(startDateTime)) {
-          return res.status(400).json({
-            success: false,
-            error: 'Justin only works Thursdays 1-5 PM'
+            error: 'Event ID and new start time are required for rescheduling'
           });
         }
         
         // Get the existing event
         const existingEvent = await calendar.events.get({
           calendarId: config.calendar.calendarId,
-          eventId: req.body.eventId
+          eventId: eventId
         });
         
         // Update the event
         const updatedEvent = await calendar.events.update({
           calendarId: config.calendar.calendarId,
-          eventId: req.body.eventId,
+          eventId: eventId,
           resource: {
             ...existingEvent.data,
             summary: `${serviceType}: ${clientName}`,
@@ -147,6 +150,12 @@ router.post('/appointment', async (req, res) => {
             end: { dateTime: endTime.toISOString(), timeZone: config.calendar.timeZone }
           },
           sendUpdates: 'all'
+        });
+        
+        // Update in database
+        await appointmentOps.updateAppointment(eventId, {
+          start_time: startTime.toISOString(),
+          end_time: endTime.toISOString()
         });
         
         result = {
@@ -171,23 +180,44 @@ router.post('/appointment', async (req, res) => {
   }
 });
 
-// Get Justin's availability
+// Get barber's availability
 router.get('/thursday-slots', async (req, res) => {
-  const { date, duration = 30 } = req.query;
+  const { 
+    barberId = 'JUSTIN_BARBER_ID',
+    startDateTime,
+    endDateTime,
+    findNextAvailable = false,
+    numSlots = 2,
+    serviceDuration = 30 
+  } = req.query;
   
   try {
     const oauth2Client = await createJustinOAuth2Client();
     const calendar = google.calendar({ version: 'v3', auth: oauth2Client });
     
-    // Get the Thursday if date provided
-    const targetDate = date ? new Date(date) : getNextThursday();
+    // Get date range to check
+    let timeMin, timeMax;
     
-    // Set to 1 PM (13:00)
-    targetDate.setHours(config.availability.startHour, 0, 0, 0);
-    
-    const timeMin = new Date(targetDate);
-    const timeMax = new Date(targetDate);
-    timeMax.setHours(config.availability.endHour, 0, 0, 0); // 5 PM
+    if (startDateTime && endDateTime) {
+      timeMin = new Date(startDateTime);
+      timeMax = new Date(endDateTime);
+    } else if (findNextAvailable) {
+      // Find next available Thursday
+      const targetDate = getNextThursday();
+      timeMin = new Date(targetDate);
+      timeMin.setHours(config.availability.startHour, 0, 0, 0); // 1 PM
+      
+      timeMax = new Date(targetDate);
+      timeMax.setHours(config.availability.endHour, 0, 0, 0); // 5 PM
+    } else {
+      // Default to next Thursday
+      const targetDate = getNextThursday();
+      timeMin = new Date(targetDate);
+      timeMin.setHours(config.availability.startHour, 0, 0, 0); // 1 PM
+      
+      timeMax = new Date(targetDate);
+      timeMax.setHours(config.availability.endHour, 0, 0, 0); // 5 PM
+    }
     
     const events = await calendar.events.list({
       calendarId: config.calendar.calendarId,
@@ -198,13 +228,19 @@ router.get('/thursday-slots', async (req, res) => {
     });
     
     // Find available slots
-    const slots = findAvailableSlots(events.data.items, timeMin, timeMax, duration);
+    let allSlots = findAvailableSlots(events.data.items, timeMin, timeMax, parseInt(serviceDuration));
+    
+    // Limit to requested number of slots if specified
+    if (numSlots > 0 && allSlots.length > numSlots) {
+      allSlots = allSlots.slice(0, numSlots);
+    }
     
     return res.status(200).json({
       success: true,
-      date: targetDate.toISOString().split('T')[0],
-      slots: slots,
-      duration: duration,
+      barberId: barberId,
+      date: timeMin.toISOString().split('T')[0],
+      slots: allSlots,
+      serviceDuration: parseInt(serviceDuration),
       location: config.availability.location
     });
   } catch (error) {
@@ -252,15 +288,15 @@ function findAvailableSlots(events, startTime, endTime, duration) {
   return slots;
 }
 
-// Get client by identifier and platform
+// Get client by phone number
 router.get('/get-client', async (req, res) => {
-  const { identifier, platform } = req.query;
+  const { phoneNumber } = req.query;
   
-  if (!identifier || !platform) {
-    return res.status(400).json({ success: false, error: 'Missing identifier or platform' });
+  if (!phoneNumber) {
+    return res.status(400).json({ success: false, error: 'Missing phone number' });
   }
   
-  const client = await clientOps.getByPlatformId(identifier, platform);
+  const client = await clientOps.getByPlatformId(phoneNumber, 'phone');
   
   return res.status(200).json({
     success: true,
@@ -271,15 +307,15 @@ router.get('/get-client', async (req, res) => {
 
 // Create client for Justin
 router.post('/create-client', async (req, res) => {
-  const { identifier, platform, name } = req.body;
+  const { phoneNumber, name } = req.body;
   
-  if (!identifier || !platform) {
-    return res.status(400).json({ success: false, error: 'Missing required fields' });
+  if (!phoneNumber) {
+    return res.status(400).json({ success: false, error: 'Missing phone number' });
   }
   
   const client = await clientOps.createClient({
-    identifier: identifier,
-    platform: platform,
+    identifier: phoneNumber,
+    platform: 'phone',
     name: name || 'New Client'
   });
   
