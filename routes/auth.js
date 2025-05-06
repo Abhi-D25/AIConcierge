@@ -1,7 +1,16 @@
 const express = require('express');
 const router = express.Router();
 const { google } = require('googleapis');
-const { barberOps } = require('../utils/supabase');
+
+// Update import path to use the base Supabase operations
+const { createSupabaseClient, createClientOperations } = require('../utils/supabase/base');
+require('dotenv').config();
+
+// Create a Supabase client for authentication purposes
+const supabaseUrl = process.env.SUPABASE_URL;
+const supabaseKey = process.env.SUPABASE_KEY;
+const supabase = createSupabaseClient(supabaseUrl, supabaseKey);
+const { barberOps } = createClientOperations(supabase);
 
 // Set up OAuth2 client
 const oauth2Client = new google.auth.OAuth2(
