@@ -3,8 +3,8 @@ require('dotenv').config();
 
 // Get Justin-specific Supabase credentials from environment variables
 // If not specified, fall back to the default Supabase credentials
-const supabaseUrl = process.env.JUSTIN_SUPABASE_URL || process.env.SUPABASE_URL;
-const supabaseKey = process.env.JUSTIN_SUPABASE_KEY || process.env.SUPABASE_KEY;
+const supabaseUrl = process.env.SUPABASE_URL;
+const supabaseKey = process.env.SUPABASE_KEY;
 
 // Create Supabase client for Justin
 const supabase = createSupabaseClient(supabaseUrl, supabaseKey);
