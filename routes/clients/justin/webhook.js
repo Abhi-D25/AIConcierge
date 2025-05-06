@@ -297,15 +297,17 @@ router.get('/get-client', async (req, res) => {
   }
   
   try {
-    // Get client info by phone number (simplified)
+    console.log('Looking up client with phone:', phone);
+    
+    // Get client info by phone number directly using supabase
     const { data: client, error } = await supabase
       .from('clients')
-      .select(`
-        *,
-        preferred_barber:barbers(id, name, phone_number)
-      `)
+      .select(`*`)
       .eq('phone_number', phone)
       .single();
+    
+    // Log the query result for debugging
+    console.log('Query result:', { client, error });
     
     if (error && error.code !== 'PGRST116') {
       console.error('Error fetching client:', error);
@@ -332,9 +334,9 @@ router.get('/get-client', async (req, res) => {
       found: !!client,
       client: client || null,
       barber: {
-        id: process.env.JUSTIN_BARBER_ID,
+        id: process.env.JUSTIN_BARBER_ID || "0f1b62ea-f65c-487d-a3e3-3b268b67f584",
         name: "Justin",
-        phone: "+19727541499" || ""
+        phone: "+19727541499"
       },
       latestAppointment
     });
