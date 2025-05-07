@@ -1719,4 +1719,57 @@ router.get('/lookup-location-id', async (req, res) => {
   }
 });
 
+router.post('/test-create-client', async (req, res) => {
+    const { phoneNumber, name = "Test Client" } = req.body;
+    
+    if (!phoneNumber) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Phone number is required' 
+      });
+    }
+    
+    try {
+      // Format phone number
+      let formattedPhone = phoneNumber;
+      const digits = formattedPhone.replace(/\D/g, '');
+      if (!formattedPhone.startsWith('+')) {
+        formattedPhone = digits.length === 10 ? `+1${digits}` : `+${digits}`;
+      }
+      
+      // Try direct insertion
+      const { data, error } = await supabase
+        .from('clients')
+        .insert({
+          phone_number: formattedPhone,
+          name: name,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        })
+        .select();
+      
+      if (error) {
+        console.error('Direct insert error:', error);
+        return res.status(500).json({ 
+          success: false, 
+          error: error.message,
+          details: "Database operation failed"
+        });
+      }
+      
+      return res.status(200).json({
+        success: true,
+        message: "Client created directly",
+        client: data[0],
+        isNew: true
+      });
+    } catch (e) {
+      console.error('Error in test-create-client:', e);
+      return res.status(500).json({ 
+        success: false, 
+        error: e.message 
+      });
+    }
+  });
+
 module.exports = router;

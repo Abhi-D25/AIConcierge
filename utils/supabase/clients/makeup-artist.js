@@ -15,82 +15,103 @@ const supabase = createClient(supabaseUrl, supabaseKey);
 
 // Client operations
 const clientOps = {
-  async getByPhoneNumber(phoneNumber) {
-    const { data, error } = await supabase
-      .from('clients')
-      .select('*')
-      .eq('phone_number', phoneNumber)
-      .single();
+    async getByPhoneNumber(phoneNumber) {
+      console.log('Fetching client with phone number:', phoneNumber);
       
-    if (error && error.code !== 'PGRST116') {
-      console.error('Error fetching client:', error);
-    }
-    return data;
-  },
-
-  async createOrUpdate(clientData) {
-    const { 
-      phone_number, 
-      name, 
-      email = null, 
-      skin_type = null,
-      skin_tone = null,
-      allergies = null,
-      preferred_service_type = null,
-      special_notes = null
-    } = clientData;
-    
-    // Check if client exists
-    const existingClient = await this.getByPhoneNumber(phone_number);
-    
-    if (existingClient) {
-      // Update existing client
       const { data, error } = await supabase
         .from('clients')
-        .update({
-          name: name || existingClient.name,
-          email: email || existingClient.email,
-          skin_type: skin_type || existingClient.skin_type,
-          skin_tone: skin_tone || existingClient.skin_tone,
-          allergies: allergies || existingClient.allergies,
-          preferred_service_type: preferred_service_type || existingClient.preferred_service_type,
-          special_notes: special_notes || existingClient.special_notes,
-          updated_at: new Date()
-        })
-        .eq('phone_number', phone_number)
-        .select();
+        .select('*')
+        .eq('phone_number', phoneNumber)
+        .single();
         
-      if (error) {
-        console.error('Error updating client:', error);
-        return null;
+      if (error && error.code !== 'PGRST116') {
+        console.error('Error fetching client:', error);
       }
       
-      return data[0];
-    } else {
-      // Create new client
-      const { data, error } = await supabase
-        .from('clients')
-        .insert({
-          phone_number,
-          name: name || 'New Client',
-          email,
-          skin_type,
-          skin_tone,
-          allergies,
-          preferred_service_type,
-          special_notes
-        })
-        .select();
-        
-      if (error) {
-        console.error('Error creating client:', error);
+      console.log('Client fetch result:', data || 'Not found');
+      return data;
+    },
+  
+    async createOrUpdate(clientData) {
+      console.log('Creating/updating client with data:', clientData);
+      
+      const { 
+        phone_number, 
+        name, 
+        email = null, 
+        skin_type = null,
+        skin_tone = null,
+        allergies = null,
+        preferred_service_type = null,
+        special_notes = null
+      } = clientData;
+      
+      // Check if client exists
+      const existingClient = await this.getByPhoneNumber(phone_number);
+      
+      try {
+        if (existingClient) {
+          console.log('Updating existing client:', existingClient.id);
+          
+          // Update existing client
+          const { data, error } = await supabase
+            .from('clients')
+            .update({
+              name: name || existingClient.name,
+              email: email || existingClient.email,
+              skin_type: skin_type || existingClient.skin_type,
+              skin_tone: skin_tone || existingClient.skin_tone,
+              allergies: allergies || existingClient.allergies,
+              preferred_service_type: preferred_service_type || existingClient.preferred_service_type,
+              special_notes: special_notes || existingClient.special_notes,
+              updated_at: new Date().toISOString()
+            })
+            .eq('id', existingClient.id)
+            .select();
+            
+          if (error) {
+            console.error('Error updating client:', error);
+            return null;
+          }
+          
+          console.log('Client updated successfully:', data);
+          return data[0];
+        } else {
+          console.log('Creating new client');
+          
+          // Create new client
+          const insertData = {
+            phone_number,
+            name: name || 'New Client',
+            email,
+            skin_type,
+            skin_tone,
+            allergies,
+            preferred_service_type,
+            special_notes
+          };
+          
+          console.log('Insert data:', insertData);
+          
+          const { data, error } = await supabase
+            .from('clients')
+            .insert(insertData)
+            .select();
+            
+          if (error) {
+            console.error('Error creating client:', error);
+            return null;
+          }
+          
+          console.log('Client created successfully:', data);
+          return data[0];
+        }
+      } catch (err) {
+        console.error('Exception in createOrUpdate:', err);
         return null;
       }
-      
-      return data[0];
     }
-  }
-};
+  };
 
 // Service operations
 const serviceOps = {
