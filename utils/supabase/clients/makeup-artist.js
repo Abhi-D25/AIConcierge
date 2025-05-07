@@ -536,6 +536,190 @@ const conversationOps = {
   }
 };
 
+const makeupArtistOps = {
+    async getAll() {
+      const { data, error } = await supabase
+        .from('makeup_artists')
+        .select('*');
+        
+      if (error) {
+        console.error('Error fetching makeup artists:', error);
+        return [];
+      }
+      
+      return data;
+    },
+    
+    async getById(id) {
+      const { data, error } = await supabase
+        .from('makeup_artists')
+        .select('*')
+        .eq('id', id)
+        .single();
+        
+      if (error) {
+        console.error('Error fetching makeup artist by ID:', error);
+        return null;
+      }
+      
+      return data;
+    },
+    
+    async getByPhoneNumber(phoneNumber) {
+      const { data, error } = await supabase
+        .from('makeup_artists')
+        .select('*')
+        .eq('phone_number', phoneNumber)
+        .single();
+        
+      if (error && error.code !== 'PGRST116') {
+        console.error('Error fetching makeup artist by phone:', error);
+      }
+      
+      return data;
+    },
+    
+    async getWithRefreshToken() {
+      const { data, error } = await supabase
+        .from('makeup_artists')
+        .select('*')
+        .not('refresh_token', 'is', null)
+        .limit(1)
+        .single();
+        
+      if (error) {
+        console.error('Error fetching makeup artist with refresh token:', error);
+        return null;
+      }
+      
+      return data;
+    },
+    
+    async updateOrCreate(artistData) {
+      const { 
+        phone_number, 
+        name, 
+        email, 
+        refresh_token, 
+        selected_calendar_id,
+        business_hours_start,
+        business_hours_end,
+        instagram_handle,
+        website_url,
+        bio
+      } = artistData;
+      
+      // Check if artist exists
+      const existingArtist = await this.getByPhoneNumber(phone_number);
+      
+      if (existingArtist) {
+        // Update existing artist
+        const { data, error } = await supabase
+          .from('makeup_artists')
+          .update({
+            name: name || existingArtist.name,
+            email: email || existingArtist.email,
+            refresh_token: refresh_token || existingArtist.refresh_token,
+            selected_calendar_id: selected_calendar_id || existingArtist.selected_calendar_id,
+            business_hours_start: business_hours_start || existingArtist.business_hours_start,
+            business_hours_end: business_hours_end || existingArtist.business_hours_end,
+            instagram_handle: instagram_handle || existingArtist.instagram_handle,
+            website_url: website_url || existingArtist.website_url,
+            bio: bio || existingArtist.bio,
+            updated_at: new Date()
+          })
+          .eq('phone_number', phone_number)
+          .select();
+          
+        if (error) {
+          console.error('Error updating makeup artist:', error);
+          return null;
+        }
+        
+        return data[0];
+      } else {
+        // Create new makeup artist
+        const { data, error } = await supabase
+          .from('makeup_artists')
+          .insert({
+            phone_number,
+            name: name || 'New Makeup Artist',
+            email,
+            refresh_token,
+            selected_calendar_id: selected_calendar_id || 'primary',
+            business_hours_start,
+            business_hours_end,
+            instagram_handle,
+            website_url,
+            bio
+          })
+          .select();
+          
+        if (error) {
+          console.error('Error creating makeup artist:', error);
+          return null;
+        }
+        
+        return data[0];
+      }
+    },
+    
+    async updateCalendarId(phoneNumber, calendarId) {
+      const { data, error } = await supabase
+        .from('makeup_artists')
+        .update({
+          selected_calendar_id: calendarId,
+          updated_at: new Date()
+        })
+        .eq('phone_number', phoneNumber)
+        .select();
+        
+      if (error) {
+        console.error('Error updating calendar ID:', error);
+        return null;
+      }
+      
+      return data[0];
+    },
+    
+    async updateRefreshToken(phoneNumber, refreshToken) {
+      const { data, error } = await supabase
+        .from('makeup_artists')
+        .update({
+          refresh_token: refreshToken,
+          updated_at: new Date()
+        })
+        .eq('phone_number', phoneNumber)
+        .select();
+        
+      if (error) {
+        console.error('Error updating refresh token:', error);
+        return null;
+      }
+      
+      return data[0];
+    },
+    
+    async updateBusinessHours(phoneNumber, startTime, endTime) {
+      const { data, error } = await supabase
+        .from('makeup_artists')
+        .update({
+          business_hours_start: startTime,
+          business_hours_end: endTime,
+          updated_at: new Date()
+        })
+        .eq('phone_number', phoneNumber)
+        .select();
+        
+      if (error) {
+        console.error('Error updating business hours:', error);
+        return null;
+      }
+      
+      return data[0];
+    }
+  };
+
 // Export all operations
 module.exports = {
   supabase,
@@ -545,5 +729,6 @@ module.exports = {
   appointmentOps,
   groupBookingOps,
   portfolioOps,
-  conversationOps
+  conversationOps,
+  makeupArtistOps
 };
