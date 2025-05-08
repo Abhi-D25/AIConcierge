@@ -15,7 +15,7 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 app.use(session({
-  secret: process.env.SESSION_SECRET,
+  secret: process.env.SESSION_SECRET || 'ai-concierge-session-secret',
   resave: false,
   saveUninitialized: false,
   cookie: { 
@@ -39,6 +39,13 @@ app.use('/webhook', require('./routes/webhook'));
 app.use('/clients/barbershop/webhook', require('./routes/clients/barbershop/webhook'));
 app.use('/clients/justin/webhook', require('./routes/clients/justin/webhook'));
 
+// Check if makeup-artist webhook exists and register it
+const makeupArtistWebhook = path.join(__dirname, 'routes', 'clients', 'makeup-artist', 'webhook.js');
+if (fs.existsSync(makeupArtistWebhook)) {
+  app.use('/clients/makeup-artist/webhook', require('./routes/clients/makeup-artist/webhook'));
+  console.log('Loaded makeup-artist webhook route');
+}
+
 // Dynamically load any additional client-specific webhook routes
 const clientsDir = path.join(__dirname, 'routes', 'clients');
 
@@ -51,7 +58,7 @@ if (fs.existsSync(clientsDir)) {
 
   // Register each client's webhook routes (skipping the ones we explicitly registered)
   clients.forEach(client => {
-    if (client !== 'barbershop' && client !== 'justin') {
+    if (client !== 'barbershop' && client !== 'justin' && client !== 'makeup-artist') {
       const webhookPath = path.join(clientsDir, client, 'webhook.js');
       if (fs.existsSync(webhookPath)) {
         console.log(`Loading webhook routes for client: ${client}`);
@@ -61,7 +68,7 @@ if (fs.existsSync(clientsDir)) {
   });
 }
 
-// Home route
+// Home route - serves the generic landing page
 app.get('/', (req, res) => {
   res.render('index');
 });
@@ -78,6 +85,8 @@ app.use((err, req, res, next) => {
 // Start server
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
+  console.log(`- Visit homepage: http://localhost:${PORT}`);
   console.log(`- Barbershop webhook: http://localhost:${PORT}/clients/barbershop/webhook`);
   console.log(`- Justin webhook: http://localhost:${PORT}/clients/justin/webhook`);
+  console.log(`- Makeup Artist webhook: http://localhost:${PORT}/clients/makeup-artist/webhook`);
 });

@@ -3,28 +3,82 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Barber Calendar Integration</title>
+  <title>AI Concierge - Calendar Integration</title>
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/css/bootstrap.min.css" rel="stylesheet">
   <link href="/css/main.css" rel="stylesheet">
+  <style>
+    .hero-section {
+      background-color: #f8f9fa;
+      padding: 3rem 0;
+      border-radius: 12px;
+    }
+    .cta-button {
+      padding: 0.8rem 2rem;
+      font-size: 1.1rem;
+      font-weight: 600;
+    }
+  </style>
 </head>
 <body>
   <div class="container">
     <div class="row justify-content-center">
-      <div class="col-md-8 col-lg-6">
+      <div class="col-md-10 col-lg-8">
         <div class="card">
           <div class="card-body text-center p-5">
-            <h1 class="app-title mb-4">Barber Calendar Integration</h1>
-            <p class="lead mb-4">
-              Connect your Google Calendar to automatically schedule appointments from your SMS messages.
-            </p>
+            <h1 class="app-title mb-3">AI Concierge</h1>
+            <h2 class="mb-4">Start your activation with us now!</h2>
+            
+            <div class="hero-section mb-4">
+              <p class="lead">
+                Connect your Google Calendar and let our AI assistant handle all your appointment scheduling needs.
+              </p>
+              <p class="mb-4">
+                No more scheduling conflicts, missed appointments, or double bookings. Our system works seamlessly with your existing calendar.
+              </p>
+            </div>
+            
+            <div class="benefits mb-4">
+              <div class="row g-4">
+                <div class="col-md-4">
+                  <div class="p-3 border rounded h-100">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" fill="currentColor" class="bi bi-calendar-check mb-3 text-primary" viewBox="0 0 16 16">
+                      <path d="M10.854 7.146a.5.5 0 0 1 0 .708l-3 3a.5.5 0 0 1-.708 0l-1.5-1.5a.5.5 0 1 1 .708-.708L7.5 9.793l2.646-2.647a.5.5 0 0 1 .708 0z"/>
+                      <path d="M3.5 0a.5.5 0 0 1 .5.5V1h8V.5a.5.5 0 0 1 1 0V1h1a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2V3a2 2 0 0 1 2-2h1V.5a.5.5 0 0 1 .5-.5zM1 4v10a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V4H1z"/>
+                    </svg>
+                    <h5>Automatic Scheduling</h5>
+                    <p class="small">Appointments are automatically added to your calendar as clients book them.</p>
+                  </div>
+                </div>
+                <div class="col-md-4">
+                  <div class="p-3 border rounded h-100">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" fill="currentColor" class="bi bi-phone mb-3 text-primary" viewBox="0 0 16 16">
+                      <path d="M11 1a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1h6zM5 0a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2V2a2 2 0 0 0-2-2H5z"/>
+                      <path d="M8 14a1 1 0 1 0 0-2 1 1 0 0 0 0 2z"/>
+                    </svg>
+                    <h5>SMS Integration</h5>
+                    <p class="small">Receive appointment bookings directly through SMS conversations.</p>
+                  </div>
+                </div>
+                <div class="col-md-4">
+                  <div class="p-3 border rounded h-100">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" fill="currentColor" class="bi bi-robot mb-3 text-primary" viewBox="0 0 16 16">
+                      <path d="M6 12.5a.5.5 0 0 1 .5-.5h3a.5.5 0 0 1 0 1h-3a.5.5 0 0 1-.5-.5ZM3 8.062C3 6.76 4.235 5.765 5.53 5.886a26.58 26.58 0 0 0 4.94 0C11.765 5.765 13 6.76 13 8.062v1.157a.933.933 0 0 1-.765.935c-.845.147-2.34.346-4.235.346-1.895 0-3.39-.2-4.235-.346A.933.933 0 0 1 3 9.219V8.062Zm4.542-.827a.25.25 0 0 0-.217.068l-.92.9a24.767 24.767 0 0 1-1.871-.183.25.25 0 0 0-.068.495c.55.076 1.232.149 2.02.193a.25.25 0 0 0 .189-.071l.754-.736.847 1.71a.25.25 0 0 0 .404.062l.932-.97a25.286 25.286 0 0 0 1.922-.188.25.25 0 0 0-.068-.495c-.538.074-1.207.145-1.98.189a.25.25 0 0 0-.166.076l-.754.785-.842-1.7a.25.25 0 0 0-.182-.135Z"/>
+                      <path d="M8.5 1.866a1 1 0 1 0-1 0V3h-2A4.5 4.5 0 0 0 1 7.5V8a1 1 0 0 0-1 1v2a1 1 0 0 0 1 1v1a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-1a1 1 0 0 0 1-1V9a1 1 0 0 0-1-1v-.5A4.5 4.5 0 0 0 10.5 3h-2V1.866ZM14 7.5V13a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V7.5A3.5 3.5 0 0 1 5.5 4h5A3.5 3.5 0 0 1 14 7.5Z"/>
+                    </svg>
+                    <h5>AI Assistant</h5>
+                    <p class="small">Our AI concierge handles scheduling, reminders, and client communication for you.</p>
+                  </div>
+                </div>
+              </div>
+            </div>
             
             <div class="d-grid gap-3">
-              <a href="/register" class="btn btn-primary btn-lg">
-                Get Started
+              <a href="/register" class="btn btn-primary btn-lg cta-button">
+                Get Started Now
               </a>
               
               <p class="text-muted mt-3">
-                Already registered? Use the link sent to your phone.
+                Already registered? Check your email or SMS for your personalized link.
               </p>
             </div>
           </div>

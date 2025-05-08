@@ -3,34 +3,66 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Setup Complete - Barber Calendar Integration</title>
+  <title>Setup Complete - AI Concierge</title>
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/css/bootstrap.min.css" rel="stylesheet">
   <link href="/css/main.css" rel="stylesheet">
+  <style>
+    .success-icon {
+      width: 100px;
+      height: 100px;
+      margin-bottom: 2rem;
+      color: #198754;
+    }
+    .success-card {
+      border-radius: 12px;
+      box-shadow: 0 6px 20px rgba(0, 0, 0, 0.1);
+    }
+    .next-steps {
+      background-color: #f8f9fa;
+      border-radius: 8px;
+      padding: 1.5rem;
+      margin-top: 2rem;
+    }
+    .next-steps-title {
+      margin-bottom: 1rem;
+      font-weight: 600;
+    }
+  </style>
 </head>
 <body>
   <div class="container">
     <div class="row justify-content-center">
       <div class="col-md-8 col-lg-6">
-        <div class="card">
+        <div class="card success-card">
           <div class="card-body text-center p-5">
             <svg class="success-icon" fill="currentColor" viewBox="0 0 16 16">
               <path d="M16 8A8 8 0 1 1 0 8a8 8 0 0 1 16 0zm-3.97-3.03a.75.75 0 0 0-1.08.022L7.477 9.417 5.384 7.323a.75.75 0 0 0-1.06 1.06L6.97 11.03a.75.75 0 0 0 1.079-.02l3.992-4.99a.75.75 0 0 0-.01-1.05z"/>
             </svg>
             
-            <h1 class="app-title mb-3">Setup Complete!</h1>
+            <h1 class="app-title mb-3">Activation Complete!</h1>
             
             <p class="lead mb-4">
-              Your calendar is now connected! SMS appointments will automatically appear in your selected calendar.
+              Your calendar is now connected to the AI Concierge. Client appointments will automatically appear in your selected calendar.
             </p>
             
-            <div class="alert alert-info mb-4">
+            <div class="alert alert-success mb-4">
               <p class="mb-0">
-                <strong>That's it!</strong> You don't need to do anything else. Just respond to your clients' SMS messages as usual, and the appointments will be added to your calendar automatically.
+                <strong>You're all set!</strong> Your account has been activated successfully.
               </p>
             </div>
             
-            <p class="text-muted mb-0">
-              You can close this window now.
+            <div class="next-steps text-start">
+              <h4 class="next-steps-title">Next Steps:</h4>
+              <ol class="ps-3">
+                <li class="mb-2">Check your email for additional setup instructions</li>
+                <li class="mb-2">You can respond to your clients' messages as usual</li>
+                <li class="mb-2">Appointments will be automatically added to your Google Calendar</li>
+                <li>Our AI assistant will handle scheduling conflicts and client confirmations</li>
+              </ol>
+            </div>
+            
+            <p class="text-muted mt-4 mb-0">
+              Thank you for choosing AI Concierge for your scheduling needs!
             </p>
           </div>
         </div>

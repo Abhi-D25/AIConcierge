@@ -2,15 +2,22 @@ const express = require('express');
 const router = express.Router();
 const { google } = require('googleapis');
 
-// Update import path to use the base Supabase operations
-const { createSupabaseClient, createClientOperations } = require('../utils/supabase/base');
-require('dotenv').config();
+// Import Supabase client creator
+const { createClient } = require('@supabase/supabase-js');
 
-// Create a Supabase client for authentication purposes
+// Import multiple Supabase clients
+const { createSupabaseClient, createClientOperations } = require('../utils/supabase/base');
+
+// Regular barber shop operations
 const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseKey = process.env.SUPABASE_KEY;
 const supabase = createSupabaseClient(supabaseUrl, supabaseKey);
 const { barberOps } = createClientOperations(supabase);
+
+// Makeup artist operations - using a separate Supabase database
+const makeupArtistUrl = process.env.MAKEUP_ARTIST_SUPABASE_URL || process.env.SUPABASE_URL;
+const makeupArtistKey = process.env.MAKEUP_ARTIST_SUPABASE_KEY || process.env.SUPABASE_KEY;
+const makeupArtistSupabase = createClient(makeupArtistUrl, makeupArtistKey);
 
 // Set up OAuth2 client
 const oauth2Client = new google.auth.OAuth2(
@@ -21,9 +28,25 @@ const oauth2Client = new google.auth.OAuth2(
 
 // Google login route
 router.get('/auth/google', (req, res) => {
-  // Store phone number in session if provided
+  // Store registration info in session
   if (req.query.phone) {
     req.session.phoneNumber = req.query.phone;
+  }
+  
+  if (req.query.name) {
+    req.session.registrantName = req.query.name;
+  }
+  
+  if (req.query.email) {
+    req.session.email = req.query.email;
+  }
+  
+  if (req.query.service_type) {
+    req.session.serviceType = req.query.service_type;
+  }
+  
+  if (req.query.business_type) {
+    req.session.businessType = req.query.business_type;
   }
 
   // Generate authentication URL
@@ -32,7 +55,6 @@ router.get('/auth/google', (req, res) => {
     scope: [
       'https://www.googleapis.com/auth/calendar',
       'https://www.googleapis.com/auth/calendar.events',
-      'https://www.googleapis.com/auth/forms',  // Add Forms API scope
       'profile',
       'email'
     ],
@@ -64,33 +86,97 @@ router.get('/auth/google/callback', async (req, res) => {
     const calendarList = await calendar.calendarList.list();
     
     // Store user information in session
-    req.session.email = data.email;
+    req.session.googleEmail = data.email;
     req.session.refreshToken = tokens.refresh_token;
     req.session.calendars = calendarList.data.items.map(cal => ({
       id: cal.id,
       summary: cal.summary
     }));
     
-    // If we have a phone number in session, we can pre-link the account
+    // If we have a phone number in session, we can update the account
     if (req.session.phoneNumber) {
       // Use the name from the registration form (stored in session) instead of Google account
-      const barberName = req.session.barberName || data.name;
+      const registrantName = req.session.registrantName || data.name;
+      const serviceType = req.session.serviceType || 'barber'; // Default to barber if not specified
+      const registrantEmail = req.session.email || data.email;
       
-      // Update or create barber record in Supabase
-      const barber = await barberOps.updateOrCreate({
-        phone_number: req.session.phoneNumber,
-        name: barberName,
-        email: data.email,
-        refresh_token: tokens.refresh_token
-      });
-      
-      // After creating/updating a barber, update the form dropdown
-      if (barber && process.env.GOOGLE_FORM_ID && process.env.GOOGLE_FORM_BARBER_QUESTION_ID) {
+      // Determine which database to use based on service type
+      if (serviceType === 'makeup_artist') {
+        console.log('Updating makeup artist with Google credentials:', registrantName);
+        
+        // Use makeup artist Supabase client
         try {
-          await updateFormBarberDropdown(tokens.refresh_token);
-        } catch (formError) {
-          console.error('Failed to update form dropdown:', formError);
-          // Non-critical error, continue with registration
+          // First check if the artist already exists
+          const { data: existingArtist, error: findError } = await makeupArtistSupabase
+            .from('makeup_artists')
+            .select('id')
+            .eq('phone_number', req.session.phoneNumber)
+            .single();
+            
+          if (findError && findError.code !== 'PGRST116') {
+            console.error('Error finding existing makeup artist:', findError);
+          }
+          
+          let artistOperation;
+          if (existingArtist) {
+            // Update existing record with Google OAuth details
+            artistOperation = makeupArtistSupabase
+              .from('makeup_artists')
+              .update({
+                name: registrantName,
+                email: registrantEmail,
+                refresh_token: tokens.refresh_token,
+                updated_at: new Date()
+              })
+              .eq('phone_number', req.session.phoneNumber)
+              .select();
+          } else {
+            // Create new record with all details
+            artistOperation = makeupArtistSupabase
+              .from('makeup_artists')
+              .insert({
+                phone_number: req.session.phoneNumber,
+                name: registrantName,
+                email: registrantEmail,
+                refresh_token: tokens.refresh_token,
+                business_hours_start: '09:00',
+                business_hours_end: '18:00',
+                created_at: new Date(),
+                updated_at: new Date()
+              })
+              .select();
+          }
+          
+          // Execute the appropriate operation
+          const { data: artist, error } = await artistOperation;
+          
+          if (error) {
+            console.error('Error updating makeup artist record:', error);
+            return res.render('error', { 
+              message: 'Failed to update your account. Please try again.' 
+            });
+          }
+          
+          console.log('Successfully updated makeup artist with Google credentials:', artist);
+        } catch (err) {
+          console.error('Exception while updating makeup artist:', err);
+          return res.render('error', { 
+            message: 'An error occurred while setting up your account. Please try again.' 
+          });
+        }
+      } else {
+        // Use regular barber shop operations
+        const barber = await barberOps.updateOrCreate({
+          phone_number: req.session.phoneNumber,
+          name: registrantName,
+          email: data.email,
+          refresh_token: tokens.refresh_token
+        });
+        
+        if (!barber) {
+          return res.render('error', { 
+            message: 'Failed to create your account. Please try again.' 
+          });
         }
       }
     } else {
@@ -109,210 +195,6 @@ router.get('/auth/google/callback', async (req, res) => {
   }
 });
 
-// New function to update the form dropdown
-async function updateFormBarberDropdown(refreshToken) {
-  try {
-    // Create new OAuth client with the refresh token
-    const formOAuth2Client = new google.auth.OAuth2(
-      process.env.GOOGLE_CLIENT_ID,
-      process.env.GOOGLE_CLIENT_SECRET,
-      process.env.REDIRECT_URI
-    );
-    
-    formOAuth2Client.setCredentials({
-      refresh_token: refreshToken
-    });
-    
-    // Create Forms API client
-    const forms = google.forms({
-      version: 'v1',
-      auth: formOAuth2Client
-    });
-    
-    // Get all barbers from database
-    const allBarbers = await barberOps.getAllBarbers();
-    
-    if (!allBarbers || allBarbers.length === 0) {
-      console.log('No barbers found to update form dropdown');
-      return;
-    }
-    
-    // Get current form structure
-    const form = await forms.forms.get({
-      formId: process.env.GOOGLE_FORM_ID
-    });
-    
-    // Find the target question (barber selection dropdown) by looking for the first dropdown in the form
-    // or you could search by title if your dropdown has a specific title
-    const targetQuestion = form.data.items.find(item => 
-      item.questionItem && 
-      item.questionItem.question.choiceQuestion &&
-      item.questionItem.question.choiceQuestion.type === 'DROP_DOWN'
-    );
-    
-    if (!targetQuestion) {
-      console.error('Target question not found in form');
-      return;
-    }
-    
-    // Prepare barber names for dropdown
-    const barberNames = allBarbers.map(barber => barber.name).sort();
-    
-    // Update the dropdown options
-    const updateRequest = {
-      requests: [{
-        updateItem: {
-          item: {
-            itemId: targetQuestion.itemId,
-            questionItem: {
-              question: {
-                questionId: targetQuestion.questionItem.question.questionId,
-                choiceQuestion: {
-                  type: 'DROP_DOWN',
-                  options: barberNames.map(name => ({
-                    value: name
-                  }))
-                }
-              }
-            }
-          },
-          location: {
-            index: targetQuestion.location.index
-          },
-          updateMask: 'questionItem.question.choiceQuestion.options'
-        }
-      }]
-    };
-    
-    // Perform the update
-    await forms.forms.batchUpdate({
-      formId: process.env.GOOGLE_FORM_ID,
-      requestBody: updateRequest
-    });
-    
-    console.log('Successfully updated form dropdown with barbers:', barberNames);
-    return true;
-  } catch (error) {
-    console.error('Error updating form dropdown:', error);
-    throw error;
-  }
-}
-
-// Add method to get form structure (useful for setup)
-router.get('/get-form-info', async (req, res) => {
-  // Only allow in development mode
-  if (process.env.NODE_ENV !== 'development') {
-    return res.status(403).send('This endpoint is only available in development mode');
-  }
-  
-  const { formId } = req.query;
-  
-  if (!formId) {
-    return res.status(400).send('Form ID is required');
-  }
-  
-  try {
-    // Get a refresh token from a barber (could also use admin token)
-    const { data: barber } = await barberOps.getFirstWithRefreshToken();
-    
-    if (!barber || !barber.refresh_token) {
-      return res.status(404).send('No barber with refresh token found');
-    }
-    
-    // Set up OAuth client with the refresh token
-    const formOAuth2Client = new google.auth.OAuth2(
-      process.env.GOOGLE_CLIENT_ID,
-      process.env.GOOGLE_CLIENT_SECRET,
-      process.env.REDIRECT_URI
-    );
-    
-    formOAuth2Client.setCredentials({
-      refresh_token: barber.refresh_token
-    });
-    
-    // Create Forms API client
-    const forms = google.forms({
-      version: 'v1',
-      auth: formOAuth2Client
-    });
-    
-    // Get form structure
-    const form = await forms.forms.get({
-      formId: formId
-    });
-    
-    // Format the response to highlight questions and IDs
-    const formattedQuestions = form.data.items
-      .filter(item => item.questionItem)
-      .map(item => {
-        const question = item.questionItem.question;
-        let type = 'Unknown';
-        
-        if (question.textQuestion) type = 'Text';
-        if (question.choiceQuestion) {
-          if (question.choiceQuestion.type === 'DROP_DOWN') type = 'Dropdown';
-          if (question.choiceQuestion.type === 'RADIO') type = 'Multiple Choice';
-          if (question.choiceQuestion.type === 'CHECKBOX') type = 'Checkboxes';
-          type = question.choiceQuestion.type || type;
-        }
-        
-        return {
-          title: item.title,
-          questionId: question.questionId,
-          type: type,
-          itemId: item.itemId,
-          index: item.location.index
-        };
-      });
-    
-    res.json({
-      formId: form.data.formId,
-      title: form.data.info.title,
-      questions: formattedQuestions
-    });
-  } catch (error) {
-    console.error('Error getting form info:', error);
-    res.status(500).send(`Error getting form info: ${error.message}`);
-  }
-});
-
-// Add method to manually update form dropdown
-router.post('/update-form-dropdown', async (req, res) => {
-  const { formId } = req.body;
-  
-  if (!formId) {
-    return res.status(400).json({
-      success: false,
-      error: 'Form ID is required'
-    });
-  }
-  
-  try {
-    // Get a refresh token from a barber (could also use admin token)
-    const { data: barber } = await barberOps.getFirstWithRefreshToken();
-    
-    if (!barber || !barber.refresh_token) {
-      return res.status(404).json({
-        success: false,
-        error: 'No barber with refresh token found'
-      });
-    }
-    
-    await updateFormBarberDropdown(barber.refresh_token);
-    
-    return res.status(200).json({
-      success: true,
-      message: 'Form dropdown updated successfully'
-    });
-  } catch (error) {
-    console.error('Manual form update error:', error);
-    return res.status(500).json({
-      success: false,
-      error: error.message
-    });
-  }
-});
-
 // Calendar selection page
 router.get('/select-calendar', (req, res) => {
   if (!req.session.calendars || !req.session.phoneNumber) {
@@ -321,7 +203,8 @@ router.get('/select-calendar', (req, res) => {
   
   res.render('select-calendar', { 
     calendars: req.session.calendars,
-    phoneNumber: req.session.phoneNumber
+    phoneNumber: req.session.phoneNumber,
+    serviceType: req.session.serviceType || 'barber'
   });
 });
 
@@ -329,21 +212,40 @@ router.get('/select-calendar', (req, res) => {
 router.post('/save-calendar', async (req, res) => {
   const { calendarId } = req.body;
   const phoneNumber = req.session.phoneNumber;
+  const serviceType = req.session.serviceType || 'barber';
   
   if (!phoneNumber) {
     return res.status(400).json({ error: 'Phone number is required' });
   }
   
   try {
-    // Update barber's selected calendar in Supabase
-    const updatedBarber = await barberOps.updateCalendarId(phoneNumber, calendarId);
-    
-    if (!updatedBarber) {
-      return res.status(404).json({ error: 'Barber not found' });
+    // Save calendar ID to appropriate database based on service type
+    if (serviceType === 'makeup_artist' || req.session.businessType === 'makeup_artist') {
+      // Update makeup artist's selected calendar in Supabase
+      const { data, error } = await makeupArtistSupabase
+        .from('makeup_artists')
+        .update({ 
+          selected_calendar_id: calendarId,
+          updated_at: new Date()
+        })
+        .eq('phone_number', phoneNumber)
+        .select();
+      
+      if (error || !data || data.length === 0) {
+        console.error('Error updating makeup artist calendar:', error);
+        return res.status(404).json({ error: 'Makeup artist not found' });
+      }
+    } else {
+      // Update barber's selected calendar
+      const updatedBarber = await barberOps.updateCalendarId(phoneNumber, calendarId);
+      
+      if (!updatedBarber) {
+        return res.status(404).json({ error: 'Barber not found' });
+      }
     }
     
     // Render success page
-    res.render('success');
+    res.render('success', { serviceType: serviceType });
     
   } catch (error) {
     console.error('Save calendar error:', error);
@@ -358,14 +260,16 @@ router.get('/register', (req, res) => {
 
 // Handle manual registration
 router.post('/register', async (req, res) => {
-  let { name, phoneNumber } = req.body;
+  let { name, phoneNumber, email, businessType, service_type } = req.body;
   
   if (!phoneNumber) {
     return res.render('error', { message: 'Phone number is required' });
   }
   
-  // Ensure phone number has +1 prefix for US numbers
+  // Clean phone number - remove any formatting
   phoneNumber = phoneNumber.replace(/\D/g, '');
+  
+  // Ensure phone number has +1 prefix for US numbers
   if (phoneNumber.length === 10) {
     phoneNumber = '+1' + phoneNumber;
   } else if (!phoneNumber.startsWith('+')) {
@@ -373,15 +277,25 @@ router.post('/register', async (req, res) => {
   }
   
   try {
-    // Store both phone and name in session
+    // Store data in session for use during Google OAuth flow
     req.session.phoneNumber = phoneNumber;
-    req.session.barberName = name;
+    req.session.registrantName = name;
+    req.session.email = email;
+    req.session.businessType = businessType || 'makeup_artist';
+    req.session.serviceType = service_type || 'makeup_artist';
     
-    // Pre-create a barber record with minimal info
-    await barberOps.updateOrCreate({
-      phone_number: phoneNumber,
-      name: name
-    });
+    // For makeup artists, we'll wait to create the record until after OAuth
+    if (service_type === 'makeup_artist' || businessType === 'makeup_artist') {
+      // Skip pre-creation, just store in session and proceed to OAuth
+      console.log('Proceeding to OAuth for makeup artist registration:', name);
+    } else {
+      // Use barber operations for pre-creation
+      await barberOps.updateOrCreate({
+        phone_number: phoneNumber,
+        name: name,
+        email: email
+      });
+    }
     
     res.redirect('/auth/google');
   } catch (error) {

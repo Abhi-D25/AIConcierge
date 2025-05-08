@@ -1,89 +1,173 @@
-/* Main styles for Barber Calendar App */
-
 body {
-    background-color: #f8f9fa;
-    padding-top: 2rem;
-    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  background-color: #f9fafb;
+  padding-top: 2rem;
+  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  color: #333;
+}
+
+/* Card styling */
+.card {
+  border-radius: 12px;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.1);
+  margin-bottom: 2rem;
+  border: none;
+}
+
+.card-body {
+  padding: 2rem;
+}
+
+/* Button styling */
+.btn-primary {
+  background-color: #4f46e5;
+  border: none;
+  padding: 10px 20px;
+  border-radius: 8px;
+  transition: all 0.2s;
+  font-weight: 500;
+}
+
+.btn-primary:hover {
+  background-color: #4338ca;
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(79, 70, 229, 0.2);
+}
+
+.btn-link {
+  color: #4f46e5;
+  text-decoration: none;
+}
+
+.btn-link:hover {
+  color: #4338ca;
+  text-decoration: underline;
+}
+
+/* Typography */
+.app-title {
+  color: #111827;
+  margin-bottom: 1.5rem;
+  font-weight: 700;
+}
+
+h1, h2, h3, h4, h5, h6 {
+  color: #111827;
+}
+
+.lead {
+  font-weight: 400;
+  color: #4b5563;
+}
+
+/* Calendar selection styling */
+.calendar-option {
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 15px;
+  margin-bottom: 10px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.calendar-option:hover {
+  background-color: #f3f4f6;
+  border-color: #d1d5db;
+}
+
+.calendar-option.selected {
+  border-color: #4f46e5;
+  background-color: #eef2ff;
+}
+
+/* Icons */
+.icon {
+  width: 24px;
+  height: 24px;
+  margin-right: 10px;
+}
+
+.success-icon {
+  width: 80px;
+  height: 80px;
+  margin-bottom: 1.5rem;
+  color: #10b981;
+}
+
+.error-icon {
+  width: 80px;
+  height: 80px;
+  margin-bottom: 1.5rem;
+  color: #ef4444;
+}
+
+/* Form styles */
+.form-control, .form-select {
+  border-radius: 8px;
+  padding: 12px;
+  margin-bottom: 1rem;
+  border: 1px solid #d1d5db;
+}
+
+.form-control:focus, .form-select:focus {
+  border-color: #4f46e5;
+  box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.25);
+}
+
+.form-label {
+  font-weight: 500;
+  color: #374151;
+  margin-bottom: 0.5rem;
+}
+
+.form-text {
+  color: #6b7280;
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+  .container {
+    padding-left: 1.5rem;
+    padding-right: 1.5rem;
   }
   
-  .card {
-    border-radius: 12px;
-    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
-    margin-bottom: 2rem;
+  .card-body {
+    padding: 1.5rem;
   }
-  
-  .btn-primary {
-    background-color: #0d6efd;
-    border: none;
-    padding: 10px 20px;
-    border-radius: 6px;
-    transition: all 0.2s;
-  }
-  
-  .btn-primary:hover {
-    background-color: #0b5ed7;
-    transform: translateY(-2px);
-  }
-  
-  .app-title {
-    color: #212529;
-    margin-bottom: 1.5rem;
-  }
-  
-  .calendar-option {
-    border: 1px solid #dee2e6;
-    border-radius: 8px;
-    padding: 15px;
-    margin-bottom: 10px;
-    cursor: pointer;
-    transition: all 0.2s;
-  }
-  
-  .calendar-option:hover {
-    background-color: #f1f3f5;
-  }
-  
-  .calendar-option.selected {
-    border-color: #0d6efd;
-    background-color: #e6f2ff;
-  }
-  
-  /* Custom icons */
-  .icon {
-    width: 24px;
-    height: 24px;
-    margin-right: 10px;
-  }
-  
-  .success-icon {
-    width: 80px;
-    height: 80px;
-    margin-bottom: 1.5rem;
-    color: #198754;
-  }
-  
-  .error-icon {
-    width: 80px;
-    height: 80px;
-    margin-bottom: 1.5rem;
-    color: #dc3545;
-  }
-  
-  /* Form styles */
-  .form-control {
-    border-radius: 6px;
-    padding: 12px;
-    margin-bottom: 1rem;
-  }
-  
-  /* Responsive adjustments */
-  @media (max-width: 768px) {
-    .container {
-      padding-left: 1.5rem;
-      padding-right: 1.5rem;
-    }
-    
-    .card-body {
-      padding: 1.5rem;
-    }
-  }
+}
+
+/* Badge styling */
+.badge {
+  font-weight: 500;
+  padding: 0.35em 0.65em;
+  border-radius: 6px;
+}
+
+.bg-primary {
+  background-color: #4f46e5 !important;
+}
+
+/* Alert styling */
+.alert {
+  border-radius: 8px;
+  border: none;
+}
+
+.alert-success {
+  background-color: #ecfdf5;
+  color: #047857;
+}
+
+.alert-info {
+  background-color: #eff6ff;
+  color: #1e40af;
+}
+
+.alert-warning {
+  background-color: #fffbeb;
+  color: #b45309;
+}
+
+.alert-danger {
+  background-color: #fef2f2;
+  color: #b91c1c;
+}

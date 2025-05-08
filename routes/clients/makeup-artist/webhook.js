@@ -238,289 +238,238 @@ router.post('/store-skin-preferences', async (req, res) => {
 
 // Create, reschedule, or cancel appointments
 router.post('/client-appointment', async (req, res) => {
-  let { 
-    clientPhone, 
-    clientName = "New Client", 
-    serviceId, 
-    locationId,
-    specificAddress,
-    startDateTime, 
-    endDateTime,
-    newStartDateTime, 
-    duration = 60, 
-    notes = '', 
-    isCancelling = false, 
-    isRescheduling = false, 
-    eventId,
-    depositAmount,
-    totalAmount,
-    paymentMethod,
-    groupClients = []
-  } = req.body;
-  
-  // Parse boolean strings to actual booleans
-  if (typeof isCancelling === 'string') isCancelling = isCancelling.toLowerCase() === 'true';
-  if (typeof isRescheduling === 'string') isRescheduling = isRescheduling.toLowerCase() === 'true';
-  if (typeof duration === 'string') duration = parseInt(duration, 10) || 60;
-  
-  // Validate required fields
-  if (!clientPhone) {
-    return res.status(400).json({ success: false, error: 'Client phone number is required' });
-  }
-  
-  try {
-    // Get or create client
-    let client = await clientOps.getByPhoneNumber(clientPhone);
+    let { 
+      clientPhone, 
+      clientName = "New Client", 
+      serviceId, // Now optional
+      locationId, // Now optional
+      specificAddress,
+      startDateTime, 
+      endDateTime,
+      newStartDateTime, 
+      duration = 60, 
+      notes = '', 
+      isCancelling = false, 
+      isRescheduling = false, 
+      eventId,
+      depositAmount,
+      totalAmount,
+      paymentMethod,
+      groupClients = []
+    } = req.body;
     
-    if (!client && !isCancelling) {
-      client = await clientOps.createOrUpdate({ 
-        phone_number: clientPhone, 
-        name: clientName
-      });
+    // Parse boolean strings to actual booleans
+    if (typeof isCancelling === 'string') isCancelling = isCancelling.toLowerCase() === 'true';
+    if (typeof isRescheduling === 'string') isRescheduling = isRescheduling.toLowerCase() === 'true';
+    if (typeof duration === 'string') duration = parseInt(duration, 10) || 60;
+    
+    // Validate required fields
+    if (!clientPhone) {
+      return res.status(400).json({ success: false, error: 'Client phone number is required' });
     }
     
-    // Get artist's Google Calendar credentials (assuming makeup artist has a record in the database)
-    const { data: artist, error: artistError } = await supabase
-      .from('makeup_artists')  // You'll need to create this table
-      .select('*')
-      .single();
-    
-    if (artistError || !artist?.refresh_token) {
-      return res.status(404).json({ 
-        success: false, 
-        error: 'Makeup artist not found or not authorized' 
-      });
-    }
-    
-    // Create Google Calendar client
-    const oauth2Client = createOAuth2Client(artist.refresh_token);
-    const calendar = google.calendar({ version: 'v3', auth: oauth2Client });
-    const calendarId = artist.selected_calendar_id || 'primary';
-    
-    // Handle different operations based on request type
-    if (isCancelling) {
-      // Cancel appointment logic
-      if (!eventId) {
-        return res.status(400).json({ success: false, error: 'Event ID is required for cancellation' });
-      }
+    try {
+      // Get or create client
+      let client = await clientOps.getByPhoneNumber(clientPhone);
       
-      // Delete from Google Calendar
-      await calendar.events.delete({
-        calendarId,
-        eventId,
-        sendUpdates: 'all'
-      });
-      
-      // Update appointment status in database
-      const { data, error } = await supabase
-        .from('appointments')
-        .update({ status: 'canceled', updated_at: new Date() })
-        .eq('google_calendar_event_id', eventId)
-        .select();
-      
-      return res.status(200).json({
-        success: true,
-        action: 'cancel',
-        eventId,
-        message: 'Appointment successfully cancelled'
-      });
-    } else if (isRescheduling) {
-      // Reschedule appointment logic
-      if (!eventId || !newStartDateTime) {
-        return res.status(400).json({ 
-          success: false, 
-          error: 'Event ID and new start date-time are required for rescheduling' 
+      if (!client && !isCancelling) {
+        client = await clientOps.createOrUpdate({ 
+          phone_number: clientPhone, 
+          name: clientName
         });
       }
       
-      // Get existing event
-      const existingEvent = await calendar.events.get({
-        calendarId,
-        eventId
-      });
-      
-      if (!existingEvent.data) {
-        return res.status(404).json({
-          success: false,
-          error: 'Appointment not found in calendar'
-        });
-      }
-      
-      // Parse new start time and calculate new end time
-      const newStartTime = parsePacificDateTime(newStartDateTime);
-      const newEndTime = new Date(newStartTime.getTime() + (duration * 60000));
-      
-      // Update the event in Google Calendar
-      const updatedEvent = await calendar.events.update({
-        calendarId,
-        eventId,
-        resource: {
-          ...existingEvent.data,
-          summary: `Makeup: ${clientName}`,
-          start: { dateTime: newStartTime.toISOString(), timeZone: 'America/Los_Angeles' },
-          end: { dateTime: newEndTime.toISOString(), timeZone: 'America/Los_Angeles' }
-        },
-        sendUpdates: 'all'
-      });
-      
-      // Update the appointment in the database
-      const { data, error } = await supabase
-        .from('appointments')
-        .update({
-          start_time: newStartTime.toISOString(),
-          end_time: newEndTime.toISOString(),
-          updated_at: new Date()
-        })
-        .eq('google_calendar_event_id', eventId)
-        .select();
-      
-      return res.status(200).json({
-        success: true,
-        action: 'reschedule',
-        eventId: updatedEvent.data.id,
-        eventLink: updatedEvent.data.htmlLink,
-        message: 'Appointment successfully rescheduled'
-      });
-    } else {
-      // Create new appointment logic
-      if (!startDateTime || !serviceId || !locationId) {
-        return res.status(400).json({ 
-          success: false, 
-          error: 'Start date-time, service ID, and location ID are required for new appointments' 
-        });
-      }
-      
-      // Get service details
-      const { data: service } = await supabase
-        .from('services')
+      // Get artist's Google Calendar credentials
+      const { data: artist, error: artistError } = await supabase
+        .from('makeup_artists')
         .select('*')
-        .eq('id', serviceId)
         .single();
       
-      if (!service) {
-        return res.status(404).json({
-          success: false,
-          error: 'Service not found'
+      if (artistError || !artist?.refresh_token) {
+        return res.status(404).json({ 
+          success: false, 
+          error: 'Makeup artist not found or not authorized' 
         });
       }
       
-      // Get location details
-      const { data: location } = await supabase
-        .from('locations')
-        .select('*')
-        .eq('id', locationId)
-        .single();
+      // Create Google Calendar client
+      const oauth2Client = createOAuth2Client(artist.refresh_token);
+      const calendar = google.calendar({ version: 'v3', auth: oauth2Client });
+      const calendarId = artist.selected_calendar_id || 'primary';
       
-      if (!location) {
-        return res.status(404).json({
-          success: false,
-          error: 'Location not found'
-        });
-      }
-      
-      // Calculate time based on service duration
-      const startTime = parsePacificDateTime(startDateTime);
-      const endTime = new Date(startTime.getTime() + (service.duration_minutes * 60000));
-      
-      // Create event description with all details
-      let description = `Client: ${clientName}\nPhone: ${clientPhone}\n`;
-      description += `Service: ${service.name}\n`;
-      description += `Location: ${location.name}`;
-      
-      if (specificAddress) {
-        description += ` (${specificAddress})`;
-      }
-      
-      description += `\nTravel Fee: $${location.travel_fee}`;
-      
-      if (notes) {
-        description += `\n\nNotes: ${notes}`;
-      }
-      
-      // Add group clients to description if any
-      if (groupClients && groupClients.length > 0) {
-        description += '\n\nAdditional clients:';
-        groupClients.forEach(gc => {
-          description += `\n- ${gc.name} (${gc.service || 'No service specified'})`;
-        });
-      }
-      
-      // Create Google Calendar event
-      const eventDetails = {
-        summary: `Makeup: ${clientName}`,
-        description,
-        location: specificAddress || location.name,
-        start: { dateTime: startTime.toISOString(), timeZone: 'America/Los_Angeles' },
-        end: { dateTime: endTime.toISOString(), timeZone: 'America/Los_Angeles' }
-      };
-      
-      const event = await calendar.events.insert({ 
-        calendarId, 
-        resource: eventDetails,
-        sendUpdates: 'all'
-      });
-      
-      // Create appointment record in database
-      const appointmentData = {
-        client_phone: clientPhone,
-        service_id: serviceId,
-        location_id: locationId,
-        specific_address: specificAddress,
-        start_time: startTime.toISOString(),
-        end_time: endTime.toISOString(),
-        google_calendar_event_id: event.data.id,
-        status: 'confirmed',
-        deposit_amount: depositAmount,
-        deposit_status: depositAmount > 0 ? 'paid' : 'pending',
-        total_amount: totalAmount || service.base_price + location.travel_fee,
-        payment_status: 'pending',
-        payment_method: paymentMethod,
-        notes
-      };
-      
-      const { data: appointment, error: apptError } = await supabase
-        .from('appointments')
-        .insert(appointmentData)
-        .select();
-      
-      if (apptError) {
-        console.error('Error creating appointment record:', apptError);
-      }
-      
-      // Create group booking records if any
-      if (appointment && groupClients && groupClients.length > 0) {
-        const groupBookingsData = groupClients.map(gc => ({
-          main_appointment_id: appointment[0].id,
-          client_phone: gc.phone,
-          client_name: gc.name,
-          service_id: gc.serviceId,
-          price: gc.price,
-          notes: gc.notes
-        }));
-        
-        const { data: groupBookings, error: gbError } = await supabase
-          .from('group_bookings')
-          .insert(groupBookingsData);
-        
-        if (gbError) {
-          console.error('Error creating group bookings:', gbError);
+      // Handle different operations based on request type
+      if (isCancelling) {
+        // Cancel appointment logic - no changes needed here
+        if (!eventId) {
+          return res.status(400).json({ success: false, error: 'Event ID is required for cancellation' });
         }
+        
+        // Delete from Google Calendar
+        await calendar.events.delete({
+          calendarId,
+          eventId,
+          sendUpdates: 'all'
+        });
+        
+        // Update appointment status in database
+        const { data, error } = await supabase
+          .from('appointments')
+          .update({ status: 'canceled', updated_at: new Date() })
+          .eq('google_calendar_event_id', eventId)
+          .select();
+        
+        return res.status(200).json({
+          success: true,
+          action: 'cancel',
+          eventId,
+          message: 'Appointment successfully cancelled'
+        });
+      } else if (isRescheduling) {
+        // Reschedule appointment logic
+        if (!eventId || !newStartDateTime) {
+          return res.status(400).json({ 
+            success: false, 
+            error: 'Event ID and new start date-time are required for rescheduling' 
+          });
+        }
+        
+        // Get existing event
+        const existingEvent = await calendar.events.get({
+          calendarId,
+          eventId
+        });
+        
+        if (!existingEvent.data) {
+          return res.status(404).json({
+            success: false,
+            error: 'Appointment not found in calendar'
+          });
+        }
+        
+        // Parse new start time and calculate new end time
+        const newStartTime = parsePacificDateTime(newStartDateTime);
+        const newEndTime = new Date(newStartTime.getTime() + (duration * 60000));
+        
+        // Update the event in Google Calendar
+        const updatedEvent = await calendar.events.update({
+          calendarId,
+          eventId,
+          resource: {
+            ...existingEvent.data,
+            summary: `Makeup: ${clientName}`,
+            start: { dateTime: newStartTime.toISOString(), timeZone: 'America/Los_Angeles' },
+            end: { dateTime: newEndTime.toISOString(), timeZone: 'America/Los_Angeles' }
+          },
+          sendUpdates: 'all'
+        });
+        
+        // Update the appointment in the database
+        const { data, error } = await supabase
+          .from('appointments')
+          .update({
+            start_time: newStartTime.toISOString(),
+            end_time: newEndTime.toISOString(),
+            updated_at: new Date()
+          })
+          .eq('google_calendar_event_id', eventId)
+          .select();
+        
+        return res.status(200).json({
+          success: true,
+          action: 'reschedule',
+          eventId: updatedEvent.data.id,
+          eventLink: updatedEvent.data.htmlLink,
+          message: 'Appointment successfully rescheduled'
+        });
+      } else {
+        // Create new appointment logic - this is where most changes are needed
+        if (!startDateTime) {
+          return res.status(400).json({ 
+            success: false, 
+            error: 'Start date-time is required for new appointments' 
+          });
+        }
+  
+        // Calculate time based on duration
+        const startTime = parsePacificDateTime(startDateTime);
+        const endTime = new Date(startTime.getTime() + (duration * 60000));
+        
+        // Create event description with available details
+        let description = `Client: ${clientName}\nPhone: ${clientPhone}\n`;
+        
+        if (specificAddress) {
+          description += `Location: ${specificAddress}\n`;
+        }
+        
+        if (notes) {
+          description += `\nNotes: ${notes}`;
+        }
+        
+        // Add group clients to description if any
+        if (groupClients && groupClients.length > 0) {
+          description += '\n\nAdditional clients:';
+          groupClients.forEach(gc => {
+            description += `\n- ${gc.name} (${gc.phone || 'No phone provided'})`;
+          });
+        }
+        
+        // Create Google Calendar event
+        const eventDetails = {
+          summary: `Makeup: ${clientName}`,
+          description,
+          location: specificAddress || 'TBD',
+          start: { dateTime: startTime.toISOString(), timeZone: 'America/Los_Angeles' },
+          end: { dateTime: endTime.toISOString(), timeZone: 'America/Los_Angeles' }
+        };
+        
+        const event = await calendar.events.insert({ 
+          calendarId, 
+          resource: eventDetails,
+          sendUpdates: 'all'
+        });
+        
+        // Create simplified appointment record in database
+        const appointmentData = {
+          client_phone: clientPhone,
+          // Only include service_id and location_id if provided
+          ...(serviceId && { service_id: serviceId }),
+          ...(locationId && { location_id: locationId }),
+          specific_address: specificAddress,
+          start_time: startTime.toISOString(),
+          end_time: endTime.toISOString(),
+          google_calendar_event_id: event.data.id,
+          status: 'confirmed',
+          deposit_amount: depositAmount,
+          deposit_status: depositAmount > 0 ? 'paid' : 'pending',
+          total_amount: totalAmount,
+          payment_status: 'pending',
+          payment_method: paymentMethod,
+          notes
+        };
+        
+        const { data: appointment, error: apptError } = await supabase
+          .from('appointments')
+          .insert(appointmentData)
+          .select();
+        
+        if (apptError) {
+          console.error('Error creating appointment record:', apptError);
+        }
+        
+        return res.status(200).json({
+          success: true,
+          action: 'create',
+          eventId: event.data.id,
+          eventLink: event.data.htmlLink,
+          appointment: appointment ? appointment[0] : null,
+          message: 'Appointment successfully created'
+        });
       }
-      
-      return res.status(200).json({
-        success: true,
-        action: 'create',
-        eventId: event.data.id,
-        eventLink: event.data.htmlLink,
-        appointment: appointment ? appointment[0] : null,
-        message: 'Appointment successfully created'
-      });
+    } catch (e) {
+      console.error('Error in client-appointment endpoint:', e);
+      return res.status(500).json({ success: false, error: e.message });
     }
-  } catch (e) {
-    console.error('Error in client-appointment endpoint:', e);
-    return res.status(500).json({ success: false, error: e.message });
-  }
-});
+  });
 
 // Check availability for a specific date and time
 router.post('/check-availability', async (req, res) => {
