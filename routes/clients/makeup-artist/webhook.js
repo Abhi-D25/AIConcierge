@@ -1772,4 +1772,65 @@ router.post('/test-create-client', async (req, res) => {
     }
   });
 
+  router.post('/store-conversation', async (req, res) => {
+    const { 
+      phoneNumber, 
+      role = 'assistant', 
+      content,
+      metadata = null
+    } = req.body;
+    
+    if (!phoneNumber || !content) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Phone number and content are required' 
+      });
+    }
+    
+    try {
+      console.log(`Storing conversation for ${phoneNumber} with role ${role}`);
+      
+      // Get or create session
+      const session = await conversationOps.getOrCreateSession(phoneNumber);
+      if (!session) {
+        return res.status(500).json({ 
+          success: false, 
+          error: 'Failed to get or create session' 
+        });
+      }
+      
+      // Store the message
+      const message = await conversationOps.addMessage(
+        session.id, 
+        role, 
+        content, 
+        metadata
+      );
+      
+      if (!message) {
+        return res.status(500).json({ 
+          success: false, 
+          error: 'Failed to store message' 
+        });
+      }
+      
+      // Get recent conversation history (last 10 messages)
+      const history = await conversationOps.getConversationHistory(phoneNumber, 10);
+      
+      return res.status(200).json({
+        success: true,
+        message: 'Conversation stored successfully',
+        messageId: message.id,
+        sessionId: session.id,
+        recentHistory: history
+      });
+    } catch (e) {
+      console.error('Error in store-conversation:', e);
+      return res.status(500).json({ 
+        success: false, 
+        error: e.message 
+      });
+    }
+  });
+
 module.exports = router;
