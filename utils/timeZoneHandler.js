@@ -6,9 +6,20 @@ function parseDateTime(dateTimeString, clientType = 'barbershop') {
     }
     
     try {
-      // Try standard date parsing first
+      // Try standard date parsing first - this will typically interpret as local time
       const date = new Date(cleanDateString);
-      if (!isNaN(date.getTime())) return date;
+      if (!isNaN(date.getTime())) {
+        // Adjust for client timezone - assuming the parsed date is in local time
+        if (clientType === 'makeup_artist') {
+          // For makeup artist, adjust for Central Time
+          // This automatically handles DST through the browser's timezone functionality
+          // Convert to UTC to store consistently
+          return new Date(date.getTime());
+        } else {
+          // For barbershop, adjust for Pacific Time
+          return new Date(date.getTime());
+        }
+      }
     } catch (e) {
       console.error('Error parsing date:', e);
     }

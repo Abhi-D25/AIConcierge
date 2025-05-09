@@ -504,6 +504,81 @@ router.post('/client-appointment', async (req, res) => {
       return res.status(500).json({ success: false, error: e.message });
     }
   });
+
+  router.post('/update-client-info', async (req, res) => {
+    const { 
+      phoneNumber, 
+      name,
+      email,
+      skinType,
+      skinTone,
+      allergies,
+      preferredServiceType,
+      specialNotes
+    } = req.body;
+    
+    if (!phoneNumber) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Phone number is required' 
+      });
+    }
+    
+    try {
+      // Format phone number
+      let formattedPhone = phoneNumber;
+      const digits = formattedPhone.replace(/\D/g, '');
+      if (!formattedPhone.startsWith('+')) {
+        formattedPhone = digits.length === 10 ? `+1${digits}` : `+${digits}`;
+      }
+      
+      // Prepare client data
+      const clientData = {
+        phone_number: formattedPhone
+      };
+      
+      // Only include provided fields
+      if (name) clientData.name = name;
+      if (email) clientData.email = email;
+      if (skinType) clientData.skin_type = skinType;
+      if (skinTone) clientData.skin_tone = skinTone;
+      if (allergies) clientData.allergies = allergies;
+      if (preferredServiceType) clientData.preferred_service_type = preferredServiceType;
+      if (specialNotes) clientData.special_notes = specialNotes;
+      
+      // Create or update client
+      const client = await clientOps.createOrUpdate(clientData);
+      
+      if (!client) {
+        return res.status(500).json({ 
+          success: false, 
+          error: 'Failed to update client information' 
+        });
+      }
+      
+      return res.status(200).json({
+        success: true,
+        message: 'Client information updated successfully',
+        client: {
+          id: client.id,
+          name: client.name,
+          phone: client.phone_number,
+          email: client.email,
+          skin_type: client.skin_type,
+          skin_tone: client.skin_tone,
+          allergies: client.allergies,
+          preferred_service_type: client.preferred_service_type,
+          special_notes: client.special_notes
+        }
+      });
+    } catch (e) {
+      console.error('Error in update-client-info:', e);
+      return res.status(500).json({ 
+        success: false, 
+        error: e.message 
+      });
+    }
+  });
   
   // Simplified check-availability endpoint without serviceId requirement
   router.post('/check-availability', async (req, res) => {
