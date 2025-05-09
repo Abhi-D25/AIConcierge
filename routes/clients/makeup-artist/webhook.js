@@ -3,6 +3,7 @@ const express = require('express');
 const router = express.Router();
 const { google } = require('googleapis');
 const { clientOps, serviceOps, locationOps, appointmentOps, portfolioOps, conversationOps, supabase } = require('../../../utils/supabase/clients/makeup-artist');
+const { parseDateTime, formatToTimeZone } = require('../../../utils/timeZoneHandler');
 
 // Helper function to create OAuth2 client
 const createOAuth2Client = (refreshToken) => {
@@ -16,19 +17,8 @@ const createOAuth2Client = (refreshToken) => {
 };
 
 // Helper function to parse date-time from various formats
-function parsePacificDateTime(dateTimeString) {
-  let cleanDateString = dateTimeString;
-  if (dateTimeString.includes('.')) {
-    cleanDateString = dateTimeString.replace(/\.\d+(?=[Z+-])/, '');
-  }
-  try {
-    const date = new Date(cleanDateString);
-    if (!isNaN(date.getTime())) return date;
-  } catch {}
-  const match = cleanDateString.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})/);
-  if (!match) throw new Error(`Invalid date format: ${dateTimeString}`);
-  const [_, year, month, day, hour, minute, second] = match;
-  return new Date(Date.UTC(+year, +month - 1, +day, +hour + 7, +minute, +second));
+function parseCentralDateTime(dateTimeString) {
+    return parseDateTime(dateTimeString, 'makeup_artist');
 }
 
 // 1. CLIENT MANAGEMENT ENDPOINTS
@@ -241,8 +231,8 @@ router.post('/client-appointment', async (req, res) => {
     let { 
       clientPhone, 
       clientName = "New Client", 
-      serviceId, // Now optional
-      locationId, // Now optional
+      serviceId, 
+      locationId,
       specificAddress,
       startDateTime, 
       endDateTime,
@@ -279,7 +269,7 @@ router.post('/client-appointment', async (req, res) => {
         });
       }
       
-      // Get artist's Google Calendar credentials
+      // Get artist's Google Calendar credentials (assuming makeup artist has a record in the database)
       const { data: artist, error: artistError } = await supabase
         .from('makeup_artists')
         .select('*')
@@ -299,7 +289,7 @@ router.post('/client-appointment', async (req, res) => {
       
       // Handle different operations based on request type
       if (isCancelling) {
-        // Cancel appointment logic - no changes needed here
+        // Cancel appointment logic
         if (!eventId) {
           return res.status(400).json({ success: false, error: 'Event ID is required for cancellation' });
         }
@@ -346,8 +336,8 @@ router.post('/client-appointment', async (req, res) => {
           });
         }
         
-        // Parse new start time and calculate new end time
-        const newStartTime = parsePacificDateTime(newStartDateTime);
+        // Parse new start time for Central Time and calculate new end time
+        const newStartTime = parseCentralDateTime(newStartDateTime);
         const newEndTime = new Date(newStartTime.getTime() + (duration * 60000));
         
         // Update the event in Google Calendar
@@ -357,8 +347,8 @@ router.post('/client-appointment', async (req, res) => {
           resource: {
             ...existingEvent.data,
             summary: `Makeup: ${clientName}`,
-            start: { dateTime: newStartTime.toISOString(), timeZone: 'America/Los_Angeles' },
-            end: { dateTime: newEndTime.toISOString(), timeZone: 'America/Los_Angeles' }
+            start: formatToTimeZone(newStartTime, 'makeup_artist'),
+            end: formatToTimeZone(newEndTime, 'makeup_artist')
           },
           sendUpdates: 'all'
         });
@@ -382,44 +372,76 @@ router.post('/client-appointment', async (req, res) => {
           message: 'Appointment successfully rescheduled'
         });
       } else {
-        // Create new appointment logic - this is where most changes are needed
-        if (!startDateTime) {
+        // Create new appointment logic
+        if (!startDateTime || !serviceId || !locationId) {
           return res.status(400).json({ 
             success: false, 
-            error: 'Start date-time is required for new appointments' 
+            error: 'Start date-time, service ID, and location ID are required for new appointments' 
           });
         }
-  
-        // Calculate time based on duration
-        const startTime = parsePacificDateTime(startDateTime);
-        const endTime = new Date(startTime.getTime() + (duration * 60000));
         
-        // Create event description with available details
-        let description = `Client: ${clientName}\nPhone: ${clientPhone}\n`;
+        // Get service details
+        const { data: service } = await supabase
+          .from('services')
+          .select('*')
+          .eq('id', serviceId)
+          .single();
         
-        if (specificAddress) {
-          description += `Location: ${specificAddress}\n`;
+        if (!service) {
+          return res.status(404).json({
+            success: false,
+            error: 'Service not found'
+          });
         }
         
+        // Get location details
+        const { data: location } = await supabase
+          .from('locations')
+          .select('*')
+          .eq('id', locationId)
+          .single();
+        
+        if (!location) {
+          return res.status(404).json({
+            success: false,
+            error: 'Location not found'
+          });
+        }
+        
+        // Calculate time based on service duration - using Central Time
+        const startTime = parseCentralDateTime(startDateTime);
+        const endTime = new Date(startTime.getTime() + (service.duration_minutes * 60000));
+        
+        // Create event description with all details
+        let description = `Client: ${clientName}\nPhone: ${clientPhone}\n`;
+        description += `Service: ${service.name}\n`;
+        description += `Location: ${location.name}`;
+        
+        if (specificAddress) {
+          description += ` (${specificAddress})`;
+        }
+        
+        description += `\nTravel Fee: $${location.travel_fee}`;
+        
         if (notes) {
-          description += `\nNotes: ${notes}`;
+          description += `\n\nNotes: ${notes}`;
         }
         
         // Add group clients to description if any
         if (groupClients && groupClients.length > 0) {
           description += '\n\nAdditional clients:';
           groupClients.forEach(gc => {
-            description += `\n- ${gc.name} (${gc.phone || 'No phone provided'})`;
+            description += `\n- ${gc.name} (${gc.service || 'No service specified'})`;
           });
         }
         
-        // Create Google Calendar event
+        // Create Google Calendar event - using Central Time
         const eventDetails = {
           summary: `Makeup: ${clientName}`,
           description,
-          location: specificAddress || 'TBD',
-          start: { dateTime: startTime.toISOString(), timeZone: 'America/Los_Angeles' },
-          end: { dateTime: endTime.toISOString(), timeZone: 'America/Los_Angeles' }
+          location: specificAddress || location.name,
+          start: formatToTimeZone(startTime, 'makeup_artist'),
+          end: formatToTimeZone(endTime, 'makeup_artist')
         };
         
         const event = await calendar.events.insert({ 
@@ -428,12 +450,11 @@ router.post('/client-appointment', async (req, res) => {
           sendUpdates: 'all'
         });
         
-        // Create simplified appointment record in database
+        // Create appointment record in database
         const appointmentData = {
           client_phone: clientPhone,
-          // Only include service_id and location_id if provided
-          ...(serviceId && { service_id: serviceId }),
-          ...(locationId && { location_id: locationId }),
+          service_id: serviceId,
+          location_id: locationId,
           specific_address: specificAddress,
           start_time: startTime.toISOString(),
           end_time: endTime.toISOString(),
@@ -441,7 +462,7 @@ router.post('/client-appointment', async (req, res) => {
           status: 'confirmed',
           deposit_amount: depositAmount,
           deposit_status: depositAmount > 0 ? 'paid' : 'pending',
-          total_amount: totalAmount,
+          total_amount: totalAmount || service.base_price + location.travel_fee,
           payment_status: 'pending',
           payment_method: paymentMethod,
           notes
@@ -454,6 +475,26 @@ router.post('/client-appointment', async (req, res) => {
         
         if (apptError) {
           console.error('Error creating appointment record:', apptError);
+        }
+        
+        // Create group booking records if any
+        if (appointment && groupClients && groupClients.length > 0) {
+          const groupBookingsData = groupClients.map(gc => ({
+            main_appointment_id: appointment[0].id,
+            client_phone: gc.phone,
+            client_name: gc.name,
+            service_id: gc.serviceId,
+            price: gc.price,
+            notes: gc.notes
+          }));
+          
+          const { data: groupBookings, error: gbError } = await supabase
+            .from('group_bookings')
+            .insert(groupBookingsData);
+          
+          if (gbError) {
+            console.error('Error creating group bookings:', gbError);
+          }
         }
         
         return res.status(200).json({
@@ -473,249 +514,251 @@ router.post('/client-appointment', async (req, res) => {
 
 // Check availability for a specific date and time
 router.post('/check-availability', async (req, res) => {
-  const { startDateTime, endDateTime, serviceDuration = 60 } = req.body;
-  
-  if (!startDateTime) {
-    return res.status(400).json({ 
-      success: false, 
-      error: 'Start date-time is required' 
-    });
-  }
-  
-  try {
-    // Get makeup artist's calendar credentials
-    const { data: artist, error: artistError } = await supabase
-      .from('makeup_artists')
-      .select('*')
-      .single();
+    const { startDateTime, endDateTime, serviceDuration = 60 } = req.body;
     
-    if (artistError || !artist?.refresh_token) {
-      return res.status(404).json({ 
+    if (!startDateTime) {
+      return res.status(400).json({ 
         success: false, 
-        error: 'Makeup artist not found or not authorized' 
+        error: 'Start date-time is required' 
       });
     }
     
-    const oauth2Client = createOAuth2Client(artist.refresh_token);
-    const calendar = google.calendar({ version: 'v3', auth: oauth2Client });
-    const calendarId = artist.selected_calendar_id || 'primary';
-    
-    // Parse specific start time from request
-    const requestedStart = new Date(startDateTime);
-    
-    // Calculate the end time based on service duration
-    const requestedEnd = endDateTime 
-      ? new Date(endDateTime)
-      : new Date(requestedStart.getTime() + (serviceDuration * 60000));
-    
-    // Use a wider time window to fetch all potentially conflicting events
-    const timeMin = new Date(requestedStart.getTime() - (60 * 60000)); // 1 hour before
-    const timeMax = new Date(requestedEnd.getTime() + (60 * 60000));   // 1 hour after
-    
-    const response = await calendar.events.list({
-      calendarId,
-      timeMin: timeMin.toISOString(),
-      timeMax: timeMax.toISOString(),
-      timeZone: 'America/Los_Angeles',
-      singleEvents: true,
-      orderBy: 'startTime',
-      maxResults: 100
-    });
-    
-    // Check if any existing events overlap with the requested time slot
-    const isAvailable = !response.data.items.some(event => {
-      const eventStart = new Date(event.start.dateTime || event.start.date);
-      const eventEnd = new Date(event.end.dateTime || event.end.date);
+    try {
+      // Get makeup artist's calendar credentials
+      const { data: artist, error: artistError } = await supabase
+        .from('makeup_artists')
+        .select('*')
+        .single();
       
-      // Check for overlap
-      return (
-        (requestedStart < eventEnd && requestedEnd > eventStart) ||
-        (eventStart < requestedEnd && eventEnd > requestedStart)
-      );
-    });
-    
-    // Set the correct content type
-    res.setHeader('Content-Type', 'application/json');
-    
-    // Send a clean response
-    const result = {
-      success: true,
-      isAvailable: isAvailable,
-      requestedTimeSlot: {
-        start: requestedStart.toISOString(),
-        end: requestedEnd.toISOString(),
-        duration: serviceDuration
-      },
-      conflictingEvents: isAvailable ? [] : response.data.items.map(event => ({
-        id: event.id,
-        summary: event.summary || "Untitled",
-        start: event.start?.dateTime || event.start?.date,
-        end: event.end?.dateTime || event.end?.date
-      }))
-    };
-    
-    return res.send(JSON.stringify(result));
-  } catch (e) {
-    console.error('Error in check-availability:', e);
-    res.setHeader('Content-Type', 'application/json');
-    return res.send(JSON.stringify({ success: false, error: e.message }));
-  }
-});
+      if (artistError || !artist?.refresh_token) {
+        return res.status(404).json({ 
+          success: false, 
+          error: 'Makeup artist not found or not authorized' 
+        });
+      }
+      
+      const oauth2Client = createOAuth2Client(artist.refresh_token);
+      const calendar = google.calendar({ version: 'v3', auth: oauth2Client });
+      const calendarId = artist.selected_calendar_id || 'primary';
+      
+      // Parse specific start time from request - using Central Time
+      const requestedStart = parseCentralDateTime(startDateTime);
+      
+      // Calculate the end time based on service duration
+      const requestedEnd = endDateTime 
+        ? parseCentralDateTime(endDateTime)
+        : new Date(requestedStart.getTime() + (serviceDuration * 60000));
+      
+      // Use a wider time window to fetch all potentially conflicting events
+      const timeMin = new Date(requestedStart.getTime() - (60 * 60000)); // 1 hour before
+      const timeMax = new Date(requestedEnd.getTime() + (60 * 60000));   // 1 hour after
+      
+      const response = await calendar.events.list({
+        calendarId,
+        timeMin: timeMin.toISOString(),
+        timeMax: timeMax.toISOString(),
+        timeZone: 'America/Chicago', // Central Time
+        singleEvents: true,
+        orderBy: 'startTime',
+        maxResults: 100
+      });
+      
+      // Check if any existing events overlap with the requested time slot
+      const isAvailable = !response.data.items.some(event => {
+        const eventStart = new Date(event.start.dateTime || event.start.date);
+        const eventEnd = new Date(event.end.dateTime || event.end.date);
+        
+        // Check for overlap
+        return (
+          (requestedStart < eventEnd && requestedEnd > eventStart) ||
+          (eventStart < requestedEnd && eventEnd > requestedStart)
+        );
+      });
+      
+      // Set the correct content type
+      res.setHeader('Content-Type', 'application/json');
+      
+      // Send a clean response
+      const result = {
+        success: true,
+        isAvailable: isAvailable,
+        requestedTimeSlot: {
+          start: requestedStart.toISOString(),
+          end: requestedEnd.toISOString(),
+          duration: serviceDuration
+        },
+        conflictingEvents: isAvailable ? [] : response.data.items.map(event => ({
+          id: event.id,
+          summary: event.summary || "Untitled",
+          start: event.start?.dateTime || event.start?.date,
+          end: event.end?.dateTime || event.end?.date
+        }))
+      };
+      
+      return res.send(JSON.stringify(result));
+    } catch (e) {
+      console.error('Error in check-availability:', e);
+      res.setHeader('Content-Type', 'application/json');
+      return res.send(JSON.stringify({ success: false, error: e.message }));
+    }
+  });
 
 // Find next available slots
 router.post('/find-available-slots', async (req, res) => {
-  const { 
-    currentTimestamp, 
-    numSlots = 3, 
-    slotDurationMinutes = 60,
-    serviceId
-  } = req.body;
-  
-  if (!currentTimestamp) {
-    return res.status(400).json({ 
-      success: false, 
-      error: 'Current timestamp is required' 
-    });
-  }
-  
-  try {
-    // Get service duration if service ID is provided
-    let duration = slotDurationMinutes;
+    const { 
+      currentTimestamp, 
+      numSlots = 3, 
+      slotDurationMinutes = 60,
+      serviceId
+    } = req.body;
     
-    if (serviceId) {
-      const { data: service } = await supabase
-        .from('services')
-        .select('duration_minutes')
-        .eq('id', serviceId)
+    if (!currentTimestamp) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Current timestamp is required' 
+      });
+    }
+    
+    try {
+      // Get service duration if service ID is provided
+      let duration = slotDurationMinutes;
+      
+      if (serviceId) {
+        const { data: service } = await supabase
+          .from('services')
+          .select('duration_minutes')
+          .eq('id', serviceId)
+          .single();
+        
+        if (service) {
+          duration = service.duration_minutes;
+        }
+      }
+      
+      // Get makeup artist's calendar credentials
+      const { data: artist, error: artistError } = await supabase
+        .from('makeup_artists')
+        .select('*')
         .single();
       
-      if (service) {
-        duration = service.duration_minutes;
+      if (artistError || !artist?.refresh_token) {
+        return res.status(404).json({ 
+          success: false, 
+          error: 'Makeup artist not found or not authorized' 
+        });
       }
-    }
-    
-    // Get makeup artist's calendar credentials
-    const { data: artist, error: artistError } = await supabase
-      .from('makeup_artists')
-      .select('*')
-      .single();
-    
-    if (artistError || !artist?.refresh_token) {
-      return res.status(404).json({ 
-        success: false, 
-        error: 'Makeup artist not found or not authorized' 
-      });
-    }
-    
-    const oauth2Client = createOAuth2Client(artist.refresh_token);
-    const calendar = google.calendar({ version: 'v3', auth: oauth2Client });
-    const calendarId = artist.selected_calendar_id || 'primary';
-    
-    // Helper function to find available slots
-    async function findNextAvailableSlots(startFrom, numSlots, slotMinutes) {
-      const results = [];
-      let searchTime = new Date(startFrom);
-      const endTime = new Date(searchTime);
-      endTime.setDate(endTime.getDate() + 14); // Look 2 weeks ahead
       
-      // Get business hours (9am-6pm)
-      const businessHoursStart = 9; // 9am
-      const businessHoursEnd = 18; // 6pm
+      const oauth2Client = createOAuth2Client(artist.refresh_token);
+      const calendar = google.calendar({ version: 'v3', auth: oauth2Client });
+      const calendarId = artist.selected_calendar_id || 'primary';
       
-      // Get all existing appointments in the search period
-      const busyEvents = await calendar.events.list({
-        calendarId,
-        timeMin: searchTime.toISOString(),
-        timeMax: endTime.toISOString(),
-        singleEvents: true,
-        orderBy: 'startTime',
-        maxResults: 250
-      });
-      
-      const busy = busyEvents.data.items.map(evt => ({
-        start: new Date(evt.start.dateTime || evt.start.date),
-        end: new Date(evt.end.dateTime || evt.end.date)
-      }));
-      
-      // Find available slots
-      while (results.length < numSlots && searchTime < endTime) {
-        // Skip to business hours
-        const hours = searchTime.getHours();
-        const minutes = searchTime.getMinutes();
+      // Helper function to find available slots - using Central Time
+      async function findNextAvailableSlots(startFrom, numSlots, slotMinutes) {
+        const results = [];
+        let searchTime = parseCentralDateTime(startFrom);
+        const endTime = new Date(searchTime);
+        endTime.setDate(endTime.getDate() + 14); // Look 2 weeks ahead
         
-        // If before business hours, skip to start of business hours
-        if (hours < businessHoursStart) {
-          searchTime.setHours(businessHoursStart, 0, 0, 0);
-        }
+        // Get business hours (9am-6pm Central Time)
+        const businessHoursStart = 9; // 9am
+        const businessHoursEnd = 18; // 6pm
         
-        // If after business hours, skip to start of next day's business hours
-        if (hours >= businessHoursEnd) {
-          searchTime.setDate(searchTime.getDate() + 1);
-          searchTime.setHours(businessHoursStart, 0, 0, 0);
-          continue;
-        }
+        // Get all existing appointments in the search period
+        const busyEvents = await calendar.events.list({
+          calendarId,
+          timeMin: searchTime.toISOString(),
+          timeMax: endTime.toISOString(),
+          timeZone: 'America/Chicago', // Using Central Time
+          singleEvents: true,
+          orderBy: 'startTime',
+          maxResults: 250
+        });
         
-        // Check if candidate slot fits within business hours
-        const candidateEnd = new Date(searchTime.getTime() + slotMinutes * 60000);
-        if (candidateEnd.getHours() >= businessHoursEnd) {
-          // Skip to next day
-          searchTime.setDate(searchTime.getDate() + 1);
-          searchTime.setHours(businessHoursStart, 0, 0, 0);
-          continue;
-        }
+        const busy = busyEvents.data.items.map(evt => ({
+          start: new Date(evt.start.dateTime || evt.start.date),
+          end: new Date(evt.end.dateTime || evt.end.date)
+        }));
         
-        // Check if candidate slot overlaps with any busy times
-        const overlaps = busy.some(evt => 
-          (searchTime < evt.end && candidateEnd > evt.start)
-        );
-        
-        if (!overlaps) {
-          results.push({ 
-            start: new Date(searchTime), 
-            end: new Date(candidateEnd) 
-          });
+        // Find available slots
+        while (results.length < numSlots && searchTime < endTime) {
+          // Skip to business hours
+          const hours = searchTime.getHours();
+          const minutes = searchTime.getMinutes();
           
-          // Move to next slot
-          searchTime = new Date(candidateEnd);
-        } else {
-          // Move to next 30-minute boundary
-          const nextMinutes = (Math.floor(minutes / 30) + 1) * 30;
-          if (nextMinutes >= 60) {
-            searchTime.setHours(hours + 1, 0, 0, 0);
+          // If before business hours, skip to start of business hours
+          if (hours < businessHoursStart) {
+            searchTime.setHours(businessHoursStart, 0, 0, 0);
+          }
+          
+          // If after business hours, skip to start of next day's business hours
+          if (hours >= businessHoursEnd) {
+            searchTime.setDate(searchTime.getDate() + 1);
+            searchTime.setHours(businessHoursStart, 0, 0, 0);
+            continue;
+          }
+          
+          // Check if candidate slot fits within business hours
+          const candidateEnd = new Date(searchTime.getTime() + slotMinutes * 60000);
+          if (candidateEnd.getHours() >= businessHoursEnd) {
+            // Skip to next day
+            searchTime.setDate(searchTime.getDate() + 1);
+            searchTime.setHours(businessHoursStart, 0, 0, 0);
+            continue;
+          }
+          
+          // Check if candidate slot overlaps with any busy times
+          const overlaps = busy.some(evt => 
+            (searchTime < evt.end && candidateEnd > evt.start)
+          );
+          
+          if (!overlaps) {
+            results.push({ 
+              start: new Date(searchTime), 
+              end: new Date(candidateEnd) 
+            });
+            
+            // Move to next slot
+            searchTime = new Date(candidateEnd);
           } else {
-            searchTime.setHours(hours, nextMinutes, 0, 0);
+            // Move to next 30-minute boundary
+            const nextMinutes = (Math.floor(minutes / 30) + 1) * 30;
+            if (nextMinutes >= 60) {
+              searchTime.setHours(hours + 1, 0, 0, 0);
+            } else {
+              searchTime.setHours(hours, nextMinutes, 0, 0);
+            }
           }
         }
+        
+        return results.map(slot => ({
+          start: slot.start.toISOString(),
+          end: slot.end.toISOString(),
+          duration: slotMinutes
+        }));
       }
       
-      return results.map(slot => ({
-        start: slot.start.toISOString(),
-        end: slot.end.toISOString(),
-        duration: slotMinutes
-      }));
+      // Find available slots
+      const slots = await findNextAvailableSlots(
+        currentTimestamp,
+        numSlots,
+        duration
+      );
+      
+      return res.status(200).json({
+        success: true,
+        slotsFound: slots.length,
+        slots,
+        duration,
+        timeZone: 'America/Chicago' // Indicate Central Time
+      });
+    } catch (e) {
+      console.error('Error in find-available-slots:', e);
+      return res.status(500).json({ 
+        success: false, 
+        error: e.message 
+      });
     }
-    
-    // Find available slots
-    const slots = await findNextAvailableSlots(
-      new Date(currentTimestamp),
-      numSlots,
-      duration
-    );
-    
-    return res.status(200).json({
-      success: true,
-      slotsFound: slots.length,
-      slots,
-      duration
-    });
-  } catch (e) {
-    console.error('Error in find-available-slots:', e);
-    return res.status(500).json({ 
-      success: false, 
-      error: e.message 
-    });
-  }
-});
+  });
 
 // Get pending appointments
 router.get('/get-pending-appointments', async (req, res) => {
