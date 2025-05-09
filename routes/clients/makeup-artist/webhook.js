@@ -231,8 +231,8 @@ router.post('/client-appointment', async (req, res) => {
     let { 
       clientPhone, 
       clientName = "New Client", 
-      serviceId, 
-      locationId,
+      serviceType = "Makeup Service", // Use a string service type instead of ID
+      location = "Client's Location", // Use a string location instead of ID
       specificAddress,
       startDateTime, 
       endDateTime,
@@ -269,7 +269,7 @@ router.post('/client-appointment', async (req, res) => {
         });
       }
       
-      // Get artist's Google Calendar credentials (assuming makeup artist has a record in the database)
+      // Get artist's Google Calendar credentials
       const { data: artist, error: artistError } = await supabase
         .from('makeup_artists')
         .select('*')
@@ -346,7 +346,7 @@ router.post('/client-appointment', async (req, res) => {
           eventId,
           resource: {
             ...existingEvent.data,
-            summary: `Makeup: ${clientName}`,
+            summary: `${serviceType}: ${clientName}`,
             start: formatToTimeZone(newStartTime, 'makeup_artist'),
             end: formatToTimeZone(newEndTime, 'makeup_artist')
           },
@@ -359,6 +359,7 @@ router.post('/client-appointment', async (req, res) => {
           .update({
             start_time: newStartTime.toISOString(),
             end_time: newEndTime.toISOString(),
+            service_type: serviceType,
             updated_at: new Date()
           })
           .eq('google_calendar_event_id', eventId)
@@ -373,55 +374,25 @@ router.post('/client-appointment', async (req, res) => {
         });
       } else {
         // Create new appointment logic
-        if (!startDateTime || !serviceId || !locationId) {
+        if (!startDateTime) {
           return res.status(400).json({ 
             success: false, 
-            error: 'Start date-time, service ID, and location ID are required for new appointments' 
-          });
-        }
-        
-        // Get service details
-        const { data: service } = await supabase
-          .from('services')
-          .select('*')
-          .eq('id', serviceId)
-          .single();
-        
-        if (!service) {
-          return res.status(404).json({
-            success: false,
-            error: 'Service not found'
-          });
-        }
-        
-        // Get location details
-        const { data: location } = await supabase
-          .from('locations')
-          .select('*')
-          .eq('id', locationId)
-          .single();
-        
-        if (!location) {
-          return res.status(404).json({
-            success: false,
-            error: 'Location not found'
+            error: 'Start date-time is required for new appointments' 
           });
         }
         
         // Calculate time based on service duration - using Central Time
         const startTime = parseCentralDateTime(startDateTime);
-        const endTime = new Date(startTime.getTime() + (service.duration_minutes * 60000));
+        const endTime = new Date(startTime.getTime() + (duration * 60000));
         
         // Create event description with all details
         let description = `Client: ${clientName}\nPhone: ${clientPhone}\n`;
-        description += `Service: ${service.name}\n`;
-        description += `Location: ${location.name}`;
+        description += `Service: ${serviceType}\n`;
+        description += `Location: ${location}`;
         
         if (specificAddress) {
           description += ` (${specificAddress})`;
         }
-        
-        description += `\nTravel Fee: $${location.travel_fee}`;
         
         if (notes) {
           description += `\n\nNotes: ${notes}`;
@@ -437,9 +408,9 @@ router.post('/client-appointment', async (req, res) => {
         
         // Create Google Calendar event - using Central Time
         const eventDetails = {
-          summary: `Makeup: ${clientName}`,
+          summary: `${serviceType}: ${clientName}`,
           description,
-          location: specificAddress || location.name,
+          location: specificAddress || location,
           start: formatToTimeZone(startTime, 'makeup_artist'),
           end: formatToTimeZone(endTime, 'makeup_artist')
         };
@@ -453,8 +424,9 @@ router.post('/client-appointment', async (req, res) => {
         // Create appointment record in database
         const appointmentData = {
           client_phone: clientPhone,
-          service_id: serviceId,
-          location_id: locationId,
+          client_name: clientName,
+          service_type: serviceType,
+          location: location,
           specific_address: specificAddress,
           start_time: startTime.toISOString(),
           end_time: endTime.toISOString(),
@@ -462,7 +434,7 @@ router.post('/client-appointment', async (req, res) => {
           status: 'confirmed',
           deposit_amount: depositAmount,
           deposit_status: depositAmount > 0 ? 'paid' : 'pending',
-          total_amount: totalAmount || service.base_price + location.travel_fee,
+          total_amount: totalAmount,
           payment_status: 'pending',
           payment_method: paymentMethod,
           notes
@@ -475,26 +447,6 @@ router.post('/client-appointment', async (req, res) => {
         
         if (apptError) {
           console.error('Error creating appointment record:', apptError);
-        }
-        
-        // Create group booking records if any
-        if (appointment && groupClients && groupClients.length > 0) {
-          const groupBookingsData = groupClients.map(gc => ({
-            main_appointment_id: appointment[0].id,
-            client_phone: gc.phone,
-            client_name: gc.name,
-            service_id: gc.serviceId,
-            price: gc.price,
-            notes: gc.notes
-          }));
-          
-          const { data: groupBookings, error: gbError } = await supabase
-            .from('group_bookings')
-            .insert(groupBookingsData);
-          
-          if (gbError) {
-            console.error('Error creating group bookings:', gbError);
-          }
         }
         
         return res.status(200).json({
@@ -511,9 +463,9 @@ router.post('/client-appointment', async (req, res) => {
       return res.status(500).json({ success: false, error: e.message });
     }
   });
-
-// Check availability for a specific date and time
-router.post('/check-availability', async (req, res) => {
+  
+  // Simplified check-availability endpoint without serviceId requirement
+  router.post('/check-availability', async (req, res) => {
     const { startDateTime, endDateTime, serviceDuration = 60 } = req.body;
     
     if (!startDateTime) {
@@ -608,8 +560,7 @@ router.post('/find-available-slots', async (req, res) => {
     const { 
       currentTimestamp, 
       numSlots = 3, 
-      slotDurationMinutes = 60,
-      serviceId
+      slotDurationMinutes = 60
     } = req.body;
     
     if (!currentTimestamp) {
@@ -620,20 +571,8 @@ router.post('/find-available-slots', async (req, res) => {
     }
     
     try {
-      // Get service duration if service ID is provided
-      let duration = slotDurationMinutes;
-      
-      if (serviceId) {
-        const { data: service } = await supabase
-          .from('services')
-          .select('duration_minutes')
-          .eq('id', serviceId)
-          .single();
-        
-        if (service) {
-          duration = service.duration_minutes;
-        }
-      }
+      // Use the provided duration directly
+      const duration = slotDurationMinutes;
       
       // Get makeup artist's calendar credentials
       const { data: artist, error: artistError } = await supabase
