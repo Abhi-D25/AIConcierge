@@ -245,7 +245,11 @@ router.post('/client-appointment', async (req, res) => {
       depositAmount,
       totalAmount,
       paymentMethod,
-      groupClients = []
+      groupClients = [],
+      // Add these new fields to receive client info
+      skinType,
+      skinTone,
+      allergies
     } = req.body;
     
     // Parse boolean strings to actual booleans
@@ -258,15 +262,41 @@ router.post('/client-appointment', async (req, res) => {
       return res.status(400).json({ success: false, error: 'Client phone number is required' });
     }
     
+    // For new appointments, validate specific address is provided
+    if (!isCancelling && !isRescheduling && !specificAddress) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Specific address is required for appointment creation' 
+      });
+    }
+    
     try {
       // Get or create client
       let client = await clientOps.getByPhoneNumber(clientPhone);
       
       if (!client && !isCancelling) {
+        // Create new client with provided skin information
         client = await clientOps.createOrUpdate({ 
           phone_number: clientPhone, 
-          name: clientName
+          name: clientName,
+          skin_type: skinType,
+          skin_tone: skinTone,
+          allergies: allergies
         });
+      } else if (client && !isCancelling) {
+        // Update client data if provided and different from existing values
+        const updateFields = {};
+        if (skinType && skinType !== client.skin_type) updateFields.skin_type = skinType;
+        if (skinTone && skinTone !== client.skin_tone) updateFields.skin_tone = skinTone;
+        if (allergies && allergies !== client.allergies) updateFields.allergies = allergies;
+        
+        if (Object.keys(updateFields).length > 0) {
+          updateFields.updated_at = new Date();
+          await supabase
+            .from('clients')
+            .update(updateFields)
+            .eq('phone_number', clientPhone);
+        }
       }
       
       // Get artist's Google Calendar credentials
@@ -337,7 +367,8 @@ router.post('/client-appointment', async (req, res) => {
         }
         
         // Parse new start time for Central Time and calculate new end time
-        const newStartTime = parseCentralDateTime(newStartDateTime);
+        // Important: Don't append 'Z' to the time string - use Central Time (CT)
+        const newStartTime = parseCentralDateTime(newStartDateTime, 'makeup_artist');
         const newEndTime = new Date(newStartTime.getTime() + (duration * 60000));
         
         // Update the event in Google Calendar
@@ -382,7 +413,8 @@ router.post('/client-appointment', async (req, res) => {
         }
         
         // Calculate time based on service duration - using Central Time
-        const startTime = parseCentralDateTime(startDateTime);
+        // Important: parseCentralDateTime handles the time zone conversion for Central Time
+        const startTime = parseCentralDateTime(startDateTime, 'makeup_artist');
         const endTime = new Date(startTime.getTime() + (duration * 60000));
         
         // Create event description with all details
@@ -393,6 +425,11 @@ router.post('/client-appointment', async (req, res) => {
         if (specificAddress) {
           description += ` (${specificAddress})`;
         }
+        
+        // Add skin information to description
+        if (skinType) description += `\nSkin Type: ${skinType}`;
+        if (skinTone) description += `\nSkin Tone: ${skinTone}`;
+        if (allergies) description += `\nAllergies: ${allergies}`;
         
         if (notes) {
           description += `\n\nNotes: ${notes}`;
@@ -437,7 +474,11 @@ router.post('/client-appointment', async (req, res) => {
           total_amount: totalAmount,
           payment_status: 'pending',
           payment_method: paymentMethod,
-          notes
+          notes,
+          // Store skin information in the appointment record as well
+          skin_type: skinType,
+          skin_tone: skinTone,
+          allergies: allergies
         };
         
         const { data: appointment, error: apptError } = await supabase
