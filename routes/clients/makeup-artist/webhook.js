@@ -158,6 +158,54 @@ router.post('/create-client', async (req, res) => {
   }
 });
 
+function debugTimeHandling(timeStr, durationMinutes = 30) {
+    console.log('\n===== TIME HANDLING DEBUG =====');
+    console.log(`Input time: ${timeStr}`);
+    
+    // Test direct Date object creation
+    const dateObj = new Date(timeStr);
+    console.log('\nJavaScript Date Object:');
+    console.log(`- String representation: ${dateObj.toString()}`);
+    console.log(`- ISO string: ${dateObj.toISOString()}`);
+    console.log(`- Hours (local): ${dateObj.getHours()}`);
+    console.log(`- Minutes (local): ${dateObj.getMinutes()}`);
+    console.log(`- Server timezone offset: ${-dateObj.getTimezoneOffset() / 60} hours`);
+    
+    // Test end time calculation
+    const endObj = new Date(dateObj.getTime() + (durationMinutes * 60000));
+    console.log('\nCalculated End Time:');
+    console.log(`- String representation: ${endObj.toString()}`);
+    console.log(`- ISO string: ${endObj.toISOString()}`);
+    
+    // Test Google Calendar format
+    console.log('\nGoogle Calendar Format:');
+    const gcalFormat = {
+      start: {
+        dateTime: timeStr,
+        timeZone: 'America/Chicago'
+      },
+      end: {
+        dateTime: endObj.toISOString().replace(/\.\d{3}Z$/, ''),
+        timeZone: 'America/Chicago'
+      }
+    };
+    console.log(JSON.stringify(gcalFormat, null, 2));
+    
+    // Calculate end time with our helper function
+    const calculatedEnd = calculateEndTime(timeStr, durationMinutes);
+    console.log('\nUsing calculateEndTime helper:');
+    console.log(`- Result: ${calculatedEnd}`);
+    
+    console.log('\n===== END DEBUG =====\n');
+    
+    return {
+      inputTime: timeStr,
+      parsedDate: dateObj,
+      endTime: calculatedEnd,
+      googleCalendarFormat: gcalFormat
+    };
+  }
+
 // Store client's skin preferences
 router.post('/store-skin-preferences', async (req, res) => {
   const { 
@@ -231,8 +279,8 @@ router.post('/client-appointment', async (req, res) => {
     let { 
       clientPhone, 
       clientName = "New Client", 
-      serviceType = "Makeup Service",
-      location = "Client's Location",
+      serviceType = "Makeup Service", 
+      location = "Client's Location", 
       specificAddress,
       startDateTime, 
       endDateTime,
@@ -250,6 +298,8 @@ router.post('/client-appointment', async (req, res) => {
       skinTone,
       allergies
     } = req.body;
+    
+    console.log('Request body:', JSON.stringify(req.body, null, 2));
     
     // Parse boolean strings to actual booleans
     if (typeof isCancelling === 'string') isCancelling = isCancelling.toLowerCase() === 'true';
@@ -270,10 +320,19 @@ router.post('/client-appointment', async (req, res) => {
     }
     
     try {
+      // Format phone number to ensure consistency
+      let formattedPhone = clientPhone;
+      const digits = formattedPhone.replace(/\D/g, '');
+      if (!formattedPhone.startsWith('+')) {
+        formattedPhone = digits.length === 10 ? `+1${digits}` : `+${digits}`;
+      }
+      clientPhone = formattedPhone;
+      
       // Get or create client
       let client = await clientOps.getByPhoneNumber(clientPhone);
       
       if (!client && !isCancelling) {
+        console.log(`Creating new client: ${clientName} (${clientPhone})`);
         // Create new client with provided skin information
         client = await clientOps.createOrUpdate({ 
           phone_number: clientPhone, 
@@ -282,7 +341,14 @@ router.post('/client-appointment', async (req, res) => {
           skin_tone: skinTone,
           allergies: allergies
         });
+        
+        if (!client) {
+          console.error(`Failed to create client: ${clientName} (${clientPhone})`);
+        } else {
+          console.log(`Client created: ${client.id} - ${client.name}`);
+        }
       } else if (client && !isCancelling) {
+        console.log(`Updating existing client: ${client.id} - ${client.name}`);
         // Update client data if provided and different from existing values
         const updateFields = {};
         if (skinType && skinType !== client.skin_type) updateFields.skin_type = skinType;
@@ -290,11 +356,19 @@ router.post('/client-appointment', async (req, res) => {
         if (allergies && allergies !== client.allergies) updateFields.allergies = allergies;
         
         if (Object.keys(updateFields).length > 0) {
-          updateFields.updated_at = new Date();
-          await supabase
+          updateFields.updated_at = new Date().toISOString();
+          const { data, error } = await supabase
             .from('clients')
             .update(updateFields)
-            .eq('phone_number', clientPhone);
+            .eq('phone_number', clientPhone)
+            .select();
+            
+          if (error) {
+            console.error('Error updating client:', error);
+          } else {
+            console.log('Client updated:', data[0]);
+            client = data[0];
+          }
         }
       }
       
@@ -305,6 +379,7 @@ router.post('/client-appointment', async (req, res) => {
         .single();
       
       if (artistError || !artist?.refresh_token) {
+        console.error('Makeup artist not found or not authorized:', artistError);
         return res.status(404).json({ 
           success: false, 
           error: 'Makeup artist not found or not authorized' 
@@ -318,32 +393,56 @@ router.post('/client-appointment', async (req, res) => {
       
       // Handle different operations based on request type
       if (isCancelling) {
+        console.log(`Cancelling appointment with eventId: ${eventId}`);
         // Cancel appointment logic
         if (!eventId) {
           return res.status(400).json({ success: false, error: 'Event ID is required for cancellation' });
         }
         
-        // Delete from Google Calendar
-        await calendar.events.delete({
-          calendarId,
-          eventId,
-          sendUpdates: 'all'
-        });
-        
-        // Update appointment status in database
-        const { data, error } = await supabase
-          .from('appointments')
-          .update({ status: 'canceled', updated_at: new Date() })
-          .eq('google_calendar_event_id', eventId)
-          .select();
-        
-        return res.status(200).json({
-          success: true,
-          action: 'cancel',
-          eventId,
-          message: 'Appointment successfully cancelled'
-        });
+        try {
+          // Delete from Google Calendar
+          await calendar.events.delete({
+            calendarId,
+            eventId,
+            sendUpdates: 'all'
+          });
+          
+          console.log('Google Calendar event deleted successfully');
+          
+          // Update appointment status in database
+          const { data, error } = await supabase
+            .from('appointments')
+            .update({ 
+              status: 'canceled', 
+              updated_at: new Date().toISOString() 
+            })
+            .eq('google_calendar_event_id', eventId)
+            .select();
+          
+          if (error) {
+            console.error('Error updating appointment status:', error);
+            return res.status(500).json({ 
+              success: false, 
+              error: 'Event cancelled in calendar but failed to update in database: ' + error.message 
+            });
+          }
+          
+          return res.status(200).json({
+            success: true,
+            action: 'cancel',
+            eventId,
+            appointment: data[0],
+            message: 'Appointment successfully cancelled'
+          });
+        } catch (calendarError) {
+          console.error('Google Calendar error:', calendarError);
+          return res.status(500).json({ 
+            success: false, 
+            error: 'Failed to cancel event in Google Calendar: ' + calendarError.message 
+          });
+        }
       } else if (isRescheduling) {
+        console.log(`Rescheduling appointment: ${eventId} to ${newStartDateTime}`);
         // Reschedule appointment logic
         if (!eventId || !newStartDateTime) {
           return res.status(400).json({ 
@@ -352,63 +451,87 @@ router.post('/client-appointment', async (req, res) => {
           });
         }
         
-        // Get existing event
-        const existingEvent = await calendar.events.get({
-          calendarId,
-          eventId
-        });
-        
-        if (!existingEvent.data) {
-          return res.status(404).json({
-            success: false,
-            error: 'Appointment not found in calendar'
+        try {
+          // Get existing event
+          const existingEvent = await calendar.events.get({
+            calendarId,
+            eventId
+          });
+          
+          if (!existingEvent.data) {
+            console.error('Appointment not found in calendar');
+            return res.status(404).json({
+              success: false,
+              error: 'Appointment not found in calendar'
+            });
+          }
+          
+          console.log('Existing event:', JSON.stringify(existingEvent.data, null, 2));
+          
+          // Parse new times directly from input (already in CT)
+          // Calculate end time based on duration
+          const newEndDateTime = calculateEndTime(newStartDateTime, duration);
+          
+          console.log(`New times: ${newStartDateTime} to ${newEndDateTime} (duration: ${duration} minutes)`);
+          
+          // Update the event in Google Calendar
+          const updatedEvent = await calendar.events.update({
+            calendarId,
+            eventId,
+            resource: {
+              ...existingEvent.data,
+              summary: `${serviceType}: ${clientName}`,
+              start: {
+                dateTime: newStartDateTime,
+                timeZone: 'America/Chicago'
+              },
+              end: {
+                dateTime: newEndDateTime,
+                timeZone: 'America/Chicago'
+              }
+            },
+            sendUpdates: 'all'
+          });
+          
+          console.log('Google Calendar event updated successfully');
+          
+          // Update the appointment in the database
+          const { data, error } = await supabase
+            .from('appointments')
+            .update({
+              start_time: newStartDateTime,
+              end_time: newEndDateTime,
+              service_type: serviceType,
+              updated_at: new Date().toISOString()
+            })
+            .eq('google_calendar_event_id', eventId)
+            .select();
+          
+          if (error) {
+            console.error('Error updating appointment in database:', error);
+            return res.status(500).json({ 
+              success: false, 
+              error: 'Event rescheduled in calendar but failed to update in database: ' + error.message 
+            });
+          }
+          
+          return res.status(200).json({
+            success: true,
+            action: 'reschedule',
+            eventId: updatedEvent.data.id,
+            eventLink: updatedEvent.data.htmlLink,
+            appointment: data[0],
+            message: 'Appointment successfully rescheduled'
+          });
+        } catch (calendarError) {
+          console.error('Google Calendar error:', calendarError);
+          return res.status(500).json({ 
+            success: false, 
+            error: 'Failed to reschedule event in Google Calendar: ' + calendarError.message 
           });
         }
-        
-        // Parse new start time directly - ASSUMING INPUT IS ALREADY IN CENTRAL TIME
-        // Input format: 2025-05-16T13:00:00 (already in CT)
-        const newStartTime = new Date(newStartDateTime);
-        const newEndTime = new Date(newStartTime.getTime() + (duration * 60000));
-        
-        // Update the event in Google Calendar
-        const updatedEvent = await calendar.events.update({
-          calendarId,
-          eventId,
-          resource: {
-            ...existingEvent.data,
-            summary: `${serviceType}: ${clientName}`,
-            start: {
-              dateTime: newStartTime.toISOString(),
-              timeZone: 'America/Chicago'
-            },
-            end: {
-              dateTime: newEndTime.toISOString(),
-              timeZone: 'America/Chicago'
-            }
-          },
-          sendUpdates: 'all'
-        });
-        
-        // Update the appointment in the database
-        const { data, error } = await supabase
-          .from('appointments')
-          .update({
-            start_time: newStartTime.toISOString(),
-            end_time: newEndTime.toISOString(),
-            service_type: serviceType,
-            updated_at: new Date()
-          })
-          .eq('google_calendar_event_id', eventId)
-          .select();
-        
-        return res.status(200).json({
-          success: true,
-          action: 'reschedule',
-          eventId: updatedEvent.data.id,
-          eventLink: updatedEvent.data.htmlLink,
-          message: 'Appointment successfully rescheduled'
-        });
       } else {
+        console.log(`Creating new appointment for ${clientName} at ${startDateTime}`);
         // Create new appointment logic
         if (!startDateTime) {
           return res.status(400).json({ 
@@ -417,10 +540,10 @@ router.post('/client-appointment', async (req, res) => {
           });
         }
         
-        // Parse date directly - ASSUMING INPUT IS ALREADY IN CENTRAL TIME
-        // Input format: 2025-05-16T13:00:00 (already in CT)
-        const startTime = new Date(startDateTime);
-        const endTime = new Date(startTime.getTime() + (duration * 60000));
+        // Calculate end time based on duration
+        const calculatedEndDateTime = calculateEndTime(startDateTime, duration);
+        
+        console.log(`Appointment times: ${startDateTime} to ${calculatedEndDateTime} (duration: ${duration} minutes)`);
         
         // Create event description with all details
         let description = `Client: ${clientName}\nPhone: ${clientPhone}\n`;
@@ -448,72 +571,157 @@ router.post('/client-appointment', async (req, res) => {
           });
         }
         
-        // Create Google Calendar event with the correct time zone
-        const eventDetails = {
+        try {
+          // Create Google Calendar event - with times ALREADY in CT
+          const eventDetails = {
             summary: `${serviceType}: ${clientName}`,
             description,
             location: specificAddress || location,
             start: {
-              dateTime: startTime.toISOString(),
+              // CRITICAL: Use the input directly without conversion, as it's already in CT
+              dateTime: startDateTime,
               timeZone: 'America/Chicago'
             },
             end: {
-              dateTime: endTime.toISOString(),
+              // CRITICAL: Use the calculated end time without conversion
+              dateTime: calculatedEndDateTime,
               timeZone: 'America/Chicago'
             }
           };
-        
-        const event = await calendar.events.insert({ 
-          calendarId, 
-          resource: eventDetails,
-          sendUpdates: 'all'
-        });
-        
-        // Create appointment record in database
-        const appointmentData = {
-          client_phone: clientPhone,
-          client_name: clientName,
-          service_type: serviceType,
-          location: location,
-          specific_address: specificAddress,
-          start_time: startTime.toISOString(),
-          end_time: endTime.toISOString(),
-          google_calendar_event_id: event.data.id,
-          status: 'confirmed',
-          deposit_amount: depositAmount,
-          deposit_status: depositAmount > 0 ? 'paid' : 'pending',
-          total_amount: totalAmount,
-          payment_status: 'pending',
-          payment_method: paymentMethod,
-          notes,
-          skin_type: skinType,
-          skin_tone: skinTone,
-          allergies: allergies
-        };
-        
-        const { data: appointment, error: apptError } = await supabase
-          .from('appointments')
-          .insert(appointmentData)
-          .select();
-        
-        if (apptError) {
-          console.error('Error creating appointment record:', apptError);
+          
+          console.log('Creating Google Calendar event with details:', JSON.stringify(eventDetails, null, 2));
+          
+          const event = await calendar.events.insert({ 
+            calendarId, 
+            resource: eventDetails,
+            sendUpdates: 'all'
+          });
+          
+          console.log('Google Calendar event created successfully:', event.data.id);
+          
+          // Create appointment record in database
+          const appointmentData = {
+            client_phone: clientPhone,
+            client_name: clientName,
+            service_type: serviceType,
+            location: location,
+            specific_address: specificAddress,
+            // CRITICAL: Store the exact times that were used in Google Calendar
+            start_time: startDateTime,
+            end_time: calculatedEndDateTime,
+            google_calendar_event_id: event.data.id,
+            status: 'confirmed',
+            deposit_amount: depositAmount || 0,
+            deposit_status: depositAmount > 0 ? 'paid' : 'pending',
+            total_amount: totalAmount || 0,
+            payment_status: 'pending',
+            payment_method: paymentMethod,
+            notes,
+            skin_type: skinType,
+            skin_tone: skinTone,
+            allergies: allergies,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString()
+          };
+          
+          console.log('Creating appointment record:', JSON.stringify(appointmentData, null, 2));
+          
+          const { data: appointment, error: apptError } = await supabase
+            .from('appointments')
+            .insert(appointmentData)
+            .select();
+          
+          if (apptError) {
+            console.error('Error creating appointment record:', apptError);
+            
+            // Log more details about the error
+            console.error('Error code:', apptError.code);
+            console.error('Error message:', apptError.message);
+            console.error('Error details:', apptError.details);
+            
+            return res.status(500).json({ 
+              success: true, // Still return success since calendar event was created
+              action: 'create',
+              eventId: event.data.id,
+              eventLink: event.data.htmlLink,
+              appointment: null,
+              error: 'Calendar event created but failed to create appointment record: ' + apptError.message,
+              appointmentData: appointmentData // Include for debugging
+            });
+          }
+          
+          console.log('Appointment record created successfully:', appointment[0].id);
+          
+          return res.status(200).json({
+            success: true,
+            action: 'create',
+            eventId: event.data.id,
+            eventLink: event.data.htmlLink,
+            appointment: appointment[0],
+            message: 'Appointment successfully created'
+          });
+        } catch (calendarError) {
+          console.error('Google Calendar error:', calendarError);
+          return res.status(500).json({ 
+            success: false, 
+            error: 'Failed to create event in Google Calendar: ' + calendarError.message 
+          });
         }
-        
-        return res.status(200).json({
-          success: true,
-          action: 'create',
-          eventId: event.data.id,
-          eventLink: event.data.htmlLink,
-          appointment: appointment ? appointment[0] : null,
-          message: 'Appointment successfully created'
-        });
       }
     } catch (e) {
       console.error('Error in client-appointment endpoint:', e);
       return res.status(500).json({ success: false, error: e.message });
     }
-  });
+});
+
+// Helper function to calculate end time
+function calculateEndTime(startDateTimeStr, durationMinutes) {
+  // Parse the start time string
+  const startDate = new Date(startDateTimeStr);
+  
+  // If parsing failed, try a different approach
+  if (isNaN(startDate.getTime())) {
+    console.error('Failed to parse start time:', startDateTimeStr);
+    
+    // Alternative parsing - extract components and create a new date
+    const match = startDateTimeStr.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})/);
+    if (match) {
+      const [_, year, month, day, hour, minute, second] = match;
+      const newStartDate = new Date(year, month - 1, day, hour, minute, second);
+      const newEndDate = new Date(newStartDate.getTime() + (durationMinutes * 60000));
+      
+      // Format the end date in the same format as the start date
+      return `${year}-${month}-${day}T${
+        String(newEndDate.getHours()).padStart(2, '0')
+      }:${
+        String(newEndDate.getMinutes()).padStart(2, '0')
+      }:${
+        String(newEndDate.getSeconds()).padStart(2, '0')
+      }`;
+    }
+    
+    // If all parsing fails, just add duration to the ISO string
+    const parts = startDateTimeStr.split(':');
+    const hours = parseInt(parts[0].split('T')[1]);
+    const minutes = parseInt(parts[1]);
+    
+    const totalMinutes = hours * 60 + minutes + durationMinutes;
+    const newHours = Math.floor(totalMinutes / 60);
+    const newMinutes = totalMinutes % 60;
+    
+    const datePart = parts[0].split('T')[0];
+    return `${datePart}T${String(newHours).padStart(2, '0')}:${
+      String(newMinutes).padStart(2, '0')
+    }:00`;
+  }
+  
+  // Calculate end time by adding the duration
+  const endDate = new Date(startDate.getTime() + (durationMinutes * 60000));
+  
+  // Format the end date in the same format as the start date (ISO without timezone)
+  const endDateStr = endDate.toISOString().replace(/\.\d{3}Z$/, '');
+  return endDateStr;
+}
 
   router.post('/update-client-info', async (req, res) => {
     const { 
