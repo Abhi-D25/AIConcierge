@@ -311,14 +311,6 @@ router.post('/client-appointment', async (req, res) => {
       return res.status(400).json({ success: false, error: 'Client phone number is required' });
     }
     
-    // For new appointments, validate specific address is provided
-    if (!isCancelling && !isRescheduling && !specificAddress) {
-      return res.status(400).json({ 
-        success: false, 
-        error: 'Specific address is required for appointment creation' 
-      });
-    }
-    
     try {
       // Format phone number to ensure consistency
       let formattedPhone = clientPhone;
@@ -333,7 +325,6 @@ router.post('/client-appointment', async (req, res) => {
       
       if (!client && !isCancelling) {
         console.log(`Creating new client: ${clientName} (${clientPhone})`);
-        // Create new client with provided skin information
         client = await clientOps.createOrUpdate({ 
           phone_number: clientPhone, 
           name: clientName,
@@ -351,6 +342,7 @@ router.post('/client-appointment', async (req, res) => {
         console.log(`Updating existing client: ${client.id} - ${client.name}`);
         // Update client data if provided and different from existing values
         const updateFields = {};
+        if (clientName && clientName !== client.name) updateFields.name = clientName;
         if (skinType && skinType !== client.skin_type) updateFields.skin_type = skinType;
         if (skinTone && skinTone !== client.skin_tone) updateFields.skin_tone = skinTone;
         if (allergies && allergies !== client.allergies) updateFields.allergies = allergies;
@@ -394,7 +386,6 @@ router.post('/client-appointment', async (req, res) => {
       // Handle different operations based on request type
       if (isCancelling) {
         console.log(`Cancelling appointment with eventId: ${eventId}`);
-        // Cancel appointment logic
         if (!eventId) {
           return res.status(400).json({ success: false, error: 'Event ID is required for cancellation' });
         }
@@ -443,7 +434,6 @@ router.post('/client-appointment', async (req, res) => {
         }
       } else if (isRescheduling) {
         console.log(`Rescheduling appointment: ${eventId} to ${newStartDateTime}`);
-        // Reschedule appointment logic
         if (!eventId || !newStartDateTime) {
           return res.status(400).json({ 
             success: false, 
@@ -466,9 +456,6 @@ router.post('/client-appointment', async (req, res) => {
             });
           }
           
-          console.log('Existing event:', JSON.stringify(existingEvent.data, null, 2));
-          
-          // Parse new times directly from input (already in CT)
           // Calculate end time based on duration
           const newEndDateTime = calculateEndTime(newStartDateTime, duration);
           
@@ -480,7 +467,7 @@ router.post('/client-appointment', async (req, res) => {
             eventId,
             resource: {
               ...existingEvent.data,
-              summary: `${serviceType}: ${clientName}`,
+              summary: serviceType ? `${serviceType}: ${clientName}` : existingEvent.data.summary,
               start: {
                 dateTime: newStartDateTime,
                 timeZone: 'America/Chicago'
@@ -496,14 +483,15 @@ router.post('/client-appointment', async (req, res) => {
           console.log('Google Calendar event updated successfully');
           
           // Update the appointment in the database
+          const updateData = {
+            start_time: newStartDateTime,
+            end_time: newEndDateTime,
+            updated_at: new Date().toISOString()
+          };
+          
           const { data, error } = await supabase
             .from('appointments')
-            .update({
-              start_time: newStartDateTime,
-              end_time: newEndDateTime,
-              service_type: serviceType,
-              updated_at: new Date().toISOString()
-            })
+            .update(updateData)
             .eq('google_calendar_event_id', eventId)
             .select();
           
@@ -532,7 +520,6 @@ router.post('/client-appointment', async (req, res) => {
         }
       } else {
         console.log(`Creating new appointment for ${clientName} at ${startDateTime}`);
-        // Create new appointment logic
         if (!startDateTime) {
           return res.status(400).json({ 
             success: false, 
@@ -540,10 +527,13 @@ router.post('/client-appointment', async (req, res) => {
           });
         }
         
-        // Calculate end time based on duration
-        const calculatedEndDateTime = calculateEndTime(startDateTime, duration);
+        // Calculate end time if not provided
+        let finalEndDateTime = endDateTime;
+        if (!finalEndDateTime) {
+          finalEndDateTime = calculateEndTime(startDateTime, duration);
+        }
         
-        console.log(`Appointment times: ${startDateTime} to ${calculatedEndDateTime} (duration: ${duration} minutes)`);
+        console.log(`Appointment times: ${startDateTime} to ${finalEndDateTime} (duration: ${duration} minutes)`);
         
         // Create event description with all details
         let description = `Client: ${clientName}\nPhone: ${clientPhone}\n`;
@@ -578,13 +568,11 @@ router.post('/client-appointment', async (req, res) => {
             description,
             location: specificAddress || location,
             start: {
-              // CRITICAL: Use the input directly without conversion, as it's already in CT
               dateTime: startDateTime,
               timeZone: 'America/Chicago'
             },
             end: {
-              // CRITICAL: Use the calculated end time without conversion
-              dateTime: calculatedEndDateTime,
+              dateTime: finalEndDateTime,
               timeZone: 'America/Chicago'
             }
           };
@@ -602,26 +590,19 @@ router.post('/client-appointment', async (req, res) => {
           // Create appointment record in database
           const appointmentData = {
             client_phone: clientPhone,
-            client_name: clientName,
-            service_type: serviceType,
-            location: location,
+            service_id: null,        // Not using service_id
+            location_id: null,       // Not using location_id
             specific_address: specificAddress,
-            // CRITICAL: Store the exact times that were used in Google Calendar
             start_time: startDateTime,
-            end_time: calculatedEndDateTime,
+            end_time: finalEndDateTime,
             google_calendar_event_id: event.data.id,
             status: 'confirmed',
-            deposit_amount: depositAmount || 0,
+            deposit_amount: depositAmount || null,
             deposit_status: depositAmount > 0 ? 'paid' : 'pending',
-            total_amount: totalAmount || 0,
+            total_amount: totalAmount || null,
             payment_status: 'pending',
-            payment_method: paymentMethod,
-            notes,
-            skin_type: skinType,
-            skin_tone: skinTone,
-            allergies: allergies,
-            created_at: new Date().toISOString(),
-            updated_at: new Date().toISOString()
+            payment_method: paymentMethod || null,
+            notes: notes
           };
           
           console.log('Creating appointment record:', JSON.stringify(appointmentData, null, 2));
@@ -633,20 +614,16 @@ router.post('/client-appointment', async (req, res) => {
           
           if (apptError) {
             console.error('Error creating appointment record:', apptError);
-            
-            // Log more details about the error
-            console.error('Error code:', apptError.code);
-            console.error('Error message:', apptError.message);
             console.error('Error details:', apptError.details);
             
             return res.status(500).json({ 
-              success: true, // Still return success since calendar event was created
+              success: true,
               action: 'create',
               eventId: event.data.id,
               eventLink: event.data.htmlLink,
               appointment: null,
               error: 'Calendar event created but failed to create appointment record: ' + apptError.message,
-              appointmentData: appointmentData // Include for debugging
+              appointmentData: appointmentData
             });
           }
           
@@ -676,52 +653,33 @@ router.post('/client-appointment', async (req, res) => {
 
 // Helper function to calculate end time
 function calculateEndTime(startDateTimeStr, durationMinutes) {
-  // Parse the start time string
-  const startDate = new Date(startDateTimeStr);
-  
-  // If parsing failed, try a different approach
-  if (isNaN(startDate.getTime())) {
-    console.error('Failed to parse start time:', startDateTimeStr);
+  try {
+    // Parse the start time
+    const startDate = new Date(startDateTimeStr);
     
-    // Alternative parsing - extract components and create a new date
-    const match = startDateTimeStr.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})/);
-    if (match) {
-      const [_, year, month, day, hour, minute, second] = match;
-      const newStartDate = new Date(year, month - 1, day, hour, minute, second);
-      const newEndDate = new Date(newStartDate.getTime() + (durationMinutes * 60000));
-      
-      // Format the end date in the same format as the start date
-      return `${year}-${month}-${day}T${
-        String(newEndDate.getHours()).padStart(2, '0')
-      }:${
-        String(newEndDate.getMinutes()).padStart(2, '0')
-      }:${
-        String(newEndDate.getSeconds()).padStart(2, '0')
-      }`;
-    }
+    // Calculate end time by adding the duration
+    const endDate = new Date(startDate.getTime() + (durationMinutes * 60000));
     
-    // If all parsing fails, just add duration to the ISO string
-    const parts = startDateTimeStr.split(':');
-    const hours = parseInt(parts[0].split('T')[1]);
-    const minutes = parseInt(parts[1]);
+    // Format the end date in the same format as the start date
+    return endDate.toISOString().replace(/\.\d{3}Z$/, '');
+  } catch (err) {
+    console.error('Error calculating end time:', err);
+    
+    // Fallback: add hours and minutes directly to the string
+    const [datePart, timePart] = startDateTimeStr.split('T');
+    const [hoursStr, minutesStr] = timePart.split(':');
+    
+    const hours = parseInt(hoursStr);
+    const minutes = parseInt(minutesStr);
     
     const totalMinutes = hours * 60 + minutes + durationMinutes;
     const newHours = Math.floor(totalMinutes / 60);
     const newMinutes = totalMinutes % 60;
     
-    const datePart = parts[0].split('T')[0];
-    return `${datePart}T${String(newHours).padStart(2, '0')}:${
-      String(newMinutes).padStart(2, '0')
-    }:00`;
+    return `${datePart}T${String(newHours).padStart(2, '0')}:${String(newMinutes).padStart(2, '0')}:00`;
   }
-  
-  // Calculate end time by adding the duration
-  const endDate = new Date(startDate.getTime() + (durationMinutes * 60000));
-  
-  // Format the end date in the same format as the start date (ISO without timezone)
-  const endDateStr = endDate.toISOString().replace(/\.\d{3}Z$/, '');
-  return endDateStr;
 }
+
 
   router.post('/update-client-info', async (req, res) => {
     const { 
