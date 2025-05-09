@@ -231,8 +231,8 @@ router.post('/client-appointment', async (req, res) => {
     let { 
       clientPhone, 
       clientName = "New Client", 
-      serviceType = "Makeup Service", // Use a string service type instead of ID
-      location = "Client's Location", // Use a string location instead of ID
+      serviceType = "Makeup Service",
+      location = "Client's Location",
       specificAddress,
       startDateTime, 
       endDateTime,
@@ -246,7 +246,6 @@ router.post('/client-appointment', async (req, res) => {
       totalAmount,
       paymentMethod,
       groupClients = [],
-      // Add these new fields to receive client info
       skinType,
       skinTone,
       allergies
@@ -366,9 +365,9 @@ router.post('/client-appointment', async (req, res) => {
           });
         }
         
-        // Parse new start time for Central Time and calculate new end time
-        // Important: Don't append 'Z' to the time string - use Central Time (CT)
-        const newStartTime = parseCentralDateTime(newStartDateTime);
+        // Parse new start time directly - ASSUMING INPUT IS ALREADY IN CENTRAL TIME
+        // Input format: 2025-05-16T13:00:00 (already in CT)
+        const newStartTime = new Date(newStartDateTime);
         const newEndTime = new Date(newStartTime.getTime() + (duration * 60000));
         
         // Update the event in Google Calendar
@@ -378,8 +377,14 @@ router.post('/client-appointment', async (req, res) => {
           resource: {
             ...existingEvent.data,
             summary: `${serviceType}: ${clientName}`,
-            start: formatToTimeZone(newStartTime, 'makeup_artist'),
-            end: formatToTimeZone(newEndTime, 'makeup_artist')
+            start: {
+              dateTime: newStartTime.toISOString(),
+              timeZone: 'America/Chicago'
+            },
+            end: {
+              dateTime: newEndTime.toISOString(),
+              timeZone: 'America/Chicago'
+            }
           },
           sendUpdates: 'all'
         });
@@ -412,9 +417,9 @@ router.post('/client-appointment', async (req, res) => {
           });
         }
         
-        // Calculate time based on service duration - using Central Time
-        // Important: parseCentralDateTime handles the time zone conversion for Central Time
-        const startTime = parseCentralDateTime(startDateTime);
+        // Parse date directly - ASSUMING INPUT IS ALREADY IN CENTRAL TIME
+        // Input format: 2025-05-16T13:00:00 (already in CT)
+        const startTime = new Date(startDateTime);
         const endTime = new Date(startTime.getTime() + (duration * 60000));
         
         // Create event description with all details
@@ -443,7 +448,7 @@ router.post('/client-appointment', async (req, res) => {
           });
         }
         
-        // Create Google Calendar event - using Central Time
+        // Create Google Calendar event with the correct time zone
         const eventDetails = {
             summary: `${serviceType}: ${clientName}`,
             description,
@@ -481,7 +486,6 @@ router.post('/client-appointment', async (req, res) => {
           payment_status: 'pending',
           payment_method: paymentMethod,
           notes,
-          // Store skin information in the appointment record as well
           skin_type: skinType,
           skin_tone: skinTone,
           allergies: allergies
@@ -615,7 +619,8 @@ router.post('/client-appointment', async (req, res) => {
       const calendar = google.calendar({ version: 'v3', auth: oauth2Client });
       const calendarId = artist.selected_calendar_id || 'primary';
       
-      // Parse specific start time from request - using Central Time
+      // Parse specific start time from request - already in Central Time
+      // Input format: 2025-05-16T13:00:00 (already in CT)
       const requestedStart = new Date(startDateTime);
       const requestedEnd = endDateTime 
         ? new Date(endDateTime)
@@ -711,10 +716,13 @@ router.post('/find-available-slots', async (req, res) => {
       const calendar = google.calendar({ version: 'v3', auth: oauth2Client });
       const calendarId = artist.selected_calendar_id || 'primary';
       
-      // Helper function to find available slots - using Central Time
+      // Helper function to find available slots using CT time directly
       async function findNextAvailableSlots(startFrom, numSlots, slotMinutes) {
         const results = [];
-        let searchTime = parseCentralDateTime(startFrom);
+        
+        // Parse the start time directly - ASSUMING INPUT IS ALREADY IN CENTRAL TIME
+        // Input format: 2025-05-16T13:00:00 (already in CT)
+        let searchTime = new Date(startFrom);
         const endTime = new Date(searchTime);
         endTime.setDate(endTime.getDate() + 14); // Look 2 weeks ahead
         
