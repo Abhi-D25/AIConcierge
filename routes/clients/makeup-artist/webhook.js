@@ -368,7 +368,7 @@ router.post('/client-appointment', async (req, res) => {
         
         // Parse new start time for Central Time and calculate new end time
         // Important: Don't append 'Z' to the time string - use Central Time (CT)
-        const newStartTime = parseCentralDateTime(newStartDateTime, 'makeup_artist');
+        const newStartTime = parseCentralDateTime(newStartDateTime);
         const newEndTime = new Date(newStartTime.getTime() + (duration * 60000));
         
         // Update the event in Google Calendar
@@ -414,7 +414,7 @@ router.post('/client-appointment', async (req, res) => {
         
         // Calculate time based on service duration - using Central Time
         // Important: parseCentralDateTime handles the time zone conversion for Central Time
-        const startTime = parseCentralDateTime(startDateTime, 'makeup_artist');
+        const startTime = parseCentralDateTime(startDateTime);
         const endTime = new Date(startTime.getTime() + (duration * 60000));
         
         // Create event description with all details
@@ -445,12 +445,18 @@ router.post('/client-appointment', async (req, res) => {
         
         // Create Google Calendar event - using Central Time
         const eventDetails = {
-          summary: `${serviceType}: ${clientName}`,
-          description,
-          location: specificAddress || location,
-          start: formatToTimeZone(startTime, 'makeup_artist'),
-          end: formatToTimeZone(endTime, 'makeup_artist')
-        };
+            summary: `${serviceType}: ${clientName}`,
+            description,
+            location: specificAddress || location,
+            start: {
+              dateTime: startTime.toISOString(),
+              timeZone: 'America/Chicago'
+            },
+            end: {
+              dateTime: endTime.toISOString(),
+              timeZone: 'America/Chicago'
+            }
+          };
         
         const event = await calendar.events.insert({ 
           calendarId, 
@@ -610,11 +616,9 @@ router.post('/client-appointment', async (req, res) => {
       const calendarId = artist.selected_calendar_id || 'primary';
       
       // Parse specific start time from request - using Central Time
-      const requestedStart = parseCentralDateTime(startDateTime);
-      
-      // Calculate the end time based on service duration
+      const requestedStart = new Date(startDateTime);
       const requestedEnd = endDateTime 
-        ? parseCentralDateTime(endDateTime)
+        ? new Date(endDateTime)
         : new Date(requestedStart.getTime() + (serviceDuration * 60000));
       
       // Use a wider time window to fetch all potentially conflicting events
