@@ -97,11 +97,19 @@ router.get('/auth/google/callback', async (req, res) => {
     if (req.session.phoneNumber) {
       // Use the name from the registration form (stored in session) instead of Google account
       const registrantName = req.session.registrantName || data.name;
-      const serviceType = req.session.serviceType || 'barber'; // Default to barber if not specified
+      const businessType = req.session.businessType || 'barber';
+      const serviceType = req.session.serviceType || 'barber';
       const registrantEmail = req.session.email || data.email;
       
-      // Determine which database to use based on service type
-      if (serviceType === 'makeup_artist') {
+      console.log('Processing registration for:', {
+        name: registrantName,
+        businessType: businessType,
+        serviceType: serviceType,
+        email: registrantEmail
+      });
+      
+      // Only use makeup artist database for makeup artists
+      if (serviceType === 'makeup_artist' && businessType === 'makeup_artist') {
         console.log('Updating makeup artist with Google credentials:', registrantName);
         
         // Use makeup artist Supabase client
@@ -165,22 +173,30 @@ router.get('/auth/google/callback', async (req, res) => {
           });
         }
       } else {
+        // For all other business types (barber, beauty_salon, etc.)
+        console.log('Creating/updating barber with credentials:', registrantName);
+        
         // Use regular barber shop operations
         const barber = await barberOps.updateOrCreate({
           phone_number: req.session.phoneNumber,
           name: registrantName,
-          email: data.email,
-          refresh_token: tokens.refresh_token
+          email: registrantEmail,
+          refresh_token: tokens.refresh_token,
+          business_type: businessType // Store the business type
         });
         
         if (!barber) {
+          console.error('Failed to create barber account');
           return res.render('error', { 
             message: 'Failed to create your account. Please try again.' 
           });
         }
+        
+        console.log('Successfully created/updated barber account:', barber.id);
       }
     } else {
       // Display a message that phone number is required
+      console.error('No phone number provided for registration');
       return res.render('error', { 
         message: 'Phone number is required for registration. Please start again with a phone number.' 
       });
@@ -213,6 +229,7 @@ router.post('/save-calendar', async (req, res) => {
   const { calendarId } = req.body;
   const phoneNumber = req.session.phoneNumber;
   const serviceType = req.session.serviceType || 'barber';
+  const businessType = req.session.businessType || 'barber';
   
   if (!phoneNumber) {
     return res.status(400).json({ error: 'Phone number is required' });
@@ -220,7 +237,7 @@ router.post('/save-calendar', async (req, res) => {
   
   try {
     // Save calendar ID to appropriate database based on service type
-    if (serviceType === 'makeup_artist' || req.session.businessType === 'makeup_artist') {
+    if (serviceType === 'makeup_artist' && businessType === 'makeup_artist') {
       // Update makeup artist's selected calendar in Supabase
       const { data, error } = await makeupArtistSupabase
         .from('makeup_artists')
@@ -245,7 +262,7 @@ router.post('/save-calendar', async (req, res) => {
     }
     
     // Render success page
-    res.render('success', { serviceType: serviceType });
+    res.render('success', { serviceType: serviceType, businessType: businessType });
     
   } catch (error) {
     console.error('Save calendar error:', error);

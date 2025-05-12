@@ -53,13 +53,30 @@
               
               <div class="mb-4">
                 <label for="businessType" class="form-label">Business Type</label>
-                <select class="form-select form-select-lg" id="businessType" name="businessType">
+                <select class="form-select form-select-lg" id="businessType" name="businessType" onchange="updateServiceType()">
                   <option value="makeup_artist" selected>Makeup Artist</option>
+                  <option value="barber">Barber</option>
                   <option value="beauty_salon">Beauty Salon</option>
                   <option value="personal_stylist">Personal Stylist</option>
                   <option value="other">Other</option>
                 </select>
+                <input type="hidden" name="service_type" id="service_type" value="makeup_artist">
               </div>
+              
+              <script>
+                function updateServiceType() {
+                  const businessType = document.getElementById('businessType').value;
+                  const serviceTypeInput = document.getElementById('service_type');
+                  
+                  if (businessType === 'makeup_artist') {
+                    serviceTypeInput.value = 'makeup_artist';
+                  } else if (businessType === 'barber' || businessType === 'beauty_salon' || businessType === 'other') {
+                    serviceTypeInput.value = 'barber';
+                  } else {
+                    serviceTypeInput.value = businessType;
+                  }
+                }
+              </script>
               
               <div class="d-grid gap-2 mt-4">
                 <button type="submit" class="btn btn-primary btn-lg">
