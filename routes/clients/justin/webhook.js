@@ -246,11 +246,8 @@ router.post('/appointment', async (req, res) => {
 // Get barber's availability
 router.get('/thursday-slots', async (req, res) => {
   const { 
-    barberId = 'JUSTIN_BARBER_ID',
-    startDateTime,
-    endDateTime,
     findNextAvailable = false,
-    numSlots = 2,
+    numSlots = 3, 
     serviceDuration = 30 
   } = req.query;
   
@@ -258,97 +255,134 @@ router.get('/thursday-slots', async (req, res) => {
     const oauth2Client = await createJustinOAuth2Client();
     const calendar = google.calendar({ version: 'v3', auth: oauth2Client });
     
-    // Get date range to check
-    let timeMin, timeMax;
-    
-    if (startDateTime && endDateTime) {
-      timeMin = new Date(startDateTime);
-      timeMax = new Date(endDateTime);
-    } else if (findNextAvailable) {
-      // Find next available Thursday
-      const targetDate = getNextThursday();
-      timeMin = new Date(targetDate);
-      timeMin.setHours(config.availability.startHour, 0, 0, 0); // 1 PM
+    // When finding next available slots, we don't need startDateTime
+    if (findNextAvailable === 'true' || findNextAvailable === true) {
+      console.log('Finding next available slots with serviceDuration:', serviceDuration);
       
-      timeMax = new Date(targetDate);
-      timeMax.setHours(config.availability.endHour, 0, 0, 0); // 5 PM
+      // Calculate today and next 14 days for search range
+      const today = new Date();
+      const twoWeeksLater = new Date();
+      twoWeeksLater.setDate(today.getDate() + 14);
+      
+      // Find the next Thursday and Friday in this range
+      const slots = [];
+      
+      // Loop through the date range to find all Thursdays and Fridays
+      const currentDate = new Date(today);
+      while (currentDate <= twoWeeksLater) {
+        const day = currentDate.getDay();
+        
+        // Check if Thursday or Friday
+        if (day === 4 || day === 5) {
+          // Create a time range for business hours on this day
+          const businessHoursStart = new Date(currentDate);
+          const businessHoursEnd = new Date(currentDate);
+          
+          if (day === 4) { // Thursday
+            businessHoursStart.setHours(18, 0, 0, 0); // 6 PM
+            businessHoursEnd.setHours(22, 0, 0, 0);   // 10 PM
+          } else { // Friday
+            businessHoursStart.setHours(14, 0, 0, 0); // 2 PM
+            businessHoursEnd.setHours(20, 0, 0, 0);   // 8 PM
+          }
+          
+          // Only check if the business hours haven't passed yet today
+          if (today < businessHoursEnd) {
+            // Make sure we start from current time if checking today
+            if (today.toDateString() === currentDate.toDateString() && 
+                today > businessHoursStart) {
+              businessHoursStart.setHours(today.getHours(), today.getMinutes(), 0, 0);
+            }
+            
+            // Find available slots on this day
+            const daySlots = await findAvailableSlotsSimple(
+              calendar,
+              'primary',
+              businessHoursStart,
+              businessHoursEnd,
+              parseInt(serviceDuration, 10)
+            );
+            
+            // Add to our collection
+            slots.push(...daySlots);
+            
+            // Break if we have enough slots
+            if (slots.length >= parseInt(numSlots, 10)) {
+              break;
+            }
+          }
+        }
+        
+        // Move to next day
+        currentDate.setDate(currentDate.getDate() + 1);
+      }
+      
+      // Limit to requested number of slots
+      const limitedSlots = slots.slice(0, parseInt(numSlots, 10));
+      
+      return res.status(200).json({
+        success: true,
+        slots: limitedSlots,
+        serviceDuration: parseInt(serviceDuration, 10),
+        location: "1213 Alvarado Ave #84, Davis CA 95616"
+      });
     } else {
-      // Default to next Thursday
-      const targetDate = getNextThursday();
-      timeMin = new Date(targetDate);
-      timeMin.setHours(config.availability.startHour, 0, 0, 0); // 1 PM
-      
-      timeMax = new Date(targetDate);
-      timeMax.setHours(config.availability.endHour, 0, 0, 0); // 5 PM
+      return res.status(400).json({
+        success: false,
+        error: 'Must provide findNextAvailable=true to find next available slots'
+      });
     }
-    
-    const events = await calendar.events.list({
-      calendarId: config.calendar.calendarId,
-      timeMin: timeMin.toISOString(),
-      timeMax: timeMax.toISOString(),
-      singleEvents: true,
-      orderBy: 'startTime'
-    });
-    
-    // Find available slots
-    let allSlots = findAvailableSlots(events.data.items, timeMin, timeMax, parseInt(serviceDuration));
-    
-    // Limit to requested number of slots if specified
-    if (numSlots > 0 && allSlots.length > numSlots) {
-      allSlots = allSlots.slice(0, numSlots);
-    }
-    
-    return res.status(200).json({
-      success: true,
-      barberId: barberId,
-      date: timeMin.toISOString().split('T')[0],
-      slots: allSlots,
-      serviceDuration: parseInt(serviceDuration),
-      location: config.availability.location
-    });
   } catch (error) {
     console.error('Error getting Thursday slots:', error);
     return res.status(500).json({ success: false, error: error.message });
   }
 });
 
-// Helper function to get next Thursday
-function getNextThursday() {
-  const today = new Date();
-  const dayOfWeek = today.getDay();
-  const daysUntilThursday = (4 - dayOfWeek + 7) % 7 || 7;
-  const nextThursday = new Date(today);
-  nextThursday.setDate(today.getDate() + daysUntilThursday);
-  return nextThursday;
-}
-
-// Helper function to find available slots
-function findAvailableSlots(events, startTime, endTime, duration) {
-  const slots = [];
-  let currentTime = new Date(startTime);
+// Simplified function to find available slots
+async function findAvailableSlotsSimple(calendar, calendarId, startTime, endTime, slotDuration) {
+  // Get all events in the time range
+  const events = await calendar.events.list({
+    calendarId,
+    timeMin: startTime.toISOString(),
+    timeMax: endTime.toISOString(),
+    singleEvents: true,
+    orderBy: 'startTime'
+  });
   
-  while (currentTime < endTime) {
-    const slotEnd = new Date(currentTime.getTime() + (duration * 60000));
+  const busySlots = events.data.items.map(event => ({
+    start: new Date(event.start.dateTime || event.start.date),
+    end: new Date(event.end.dateTime || event.end.date)
+  }));
+  
+  // Find available slots
+  const availableSlots = [];
+  let currentSlotStart = new Date(startTime);
+  
+  while (currentSlotStart < endTime) {
+    const currentSlotEnd = new Date(currentSlotStart.getTime() + (slotDuration * 60000));
     
-    if (slotEnd > endTime) break;
+    // If slot end is after business hours end, break
+    if (currentSlotEnd > endTime) {
+      break;
+    }
     
-    const isAvailable = !events.some(event => {
-      const eventStart = new Date(event.start.dateTime);
-      const eventEnd = new Date(event.end.dateTime);
-      return (currentTime < eventEnd && slotEnd > eventStart);
-    });
+    // Check if slot overlaps with any busy time
+    const isAvailable = !busySlots.some(busy => 
+      (currentSlotStart < busy.end && currentSlotEnd > busy.start)
+    );
     
     if (isAvailable) {
-      slots.push({
-        start: currentTime.toISOString(),
-        end: slotEnd.toISOString()
+      availableSlots.push({
+        start: currentSlotStart.toISOString(),
+        end: currentSlotEnd.toISOString()
       });
     }
     
-    currentTime = new Date(currentTime.getTime() + (duration * 60000));
+    // Move to next potential slot
+    currentSlotStart = new Date(currentSlotStart.getTime() + (30 * 60000)); // Check every 30 min
   }
   
-  return slots;
+  return availableSlots;
 }
 
 // Get client by phone number
