@@ -50,38 +50,36 @@ router.post('/appointment', async (req, res) => {
   if (isCancelling) action = 'cancel';
   
   try {
-    // For creation and rescheduling, properly handle the date
-    if (action === 'create' || action === 'reschedule') {
-      const rawDateTime = action === 'reschedule' ? newStartDateTime : startDateTime;
+    // For creation and rescheduling, validate the time
+    if ((action === 'create' || action === 'reschedule') && !isCancelling) {
+      const dateTimeStr = action === 'reschedule' ? newStartDateTime : startDateTime;
       
-      // Ensure we have a properly formatted datetime with timezone
-      let parsedDateTime;
+      // Extract date and time parts directly from string
+      const datePart = dateTimeStr.split('T')[0]; // "2025-05-16"
+      const timePart = dateTimeStr.split('T')[1].split(/[-+Z]/)[0]; // "15:00:00"
+      const hour = parseInt(timePart.split(':')[0], 10); // 15
       
-      // If the datetime doesn't have a timezone offset, assume it's PT (-07:00)
-      if (!rawDateTime.match(/[+-]\d{2}:\d{2}$/)) {
-        parsedDateTime = new Date(`${rawDateTime.replace(/Z$/, '')}-07:00`);
-      } else {
-        parsedDateTime = new Date(rawDateTime);
+      // Extract day of week from date
+      const [year, month, day] = datePart.split('-').map(n => parseInt(n, 10));
+      const dateObj = new Date(year, month - 1, day); // Month is 0-indexed
+      const dayOfWeek = dateObj.getDay(); // 0-6 (Sunday-Saturday)
+      
+      // Validate against business hours
+      let isValidTime = false;
+      if (dayOfWeek === 4) { // Thursday
+        isValidTime = hour >= 18 && hour < 22; // 6 PM - 10 PM
+      } else if (dayOfWeek === 5) { // Friday
+        isValidTime = hour >= 14 && hour < 20; // 2 PM - 8 PM
       }
       
-      // Check if the appointment time is valid (Thursday 6-10 PM, Friday 2-8 PM)
-      const day = parsedDateTime.getDay();
-      const hour = parsedDateTime.getHours();
-      
-      let isValid = false;
-      if (day === 4) { // Thursday
-        isValid = hour >= 18 && hour < 22; // 6 PM - 10 PM
-      } else if (day === 5) { // Friday
-        isValid = hour >= 14 && hour < 20; // 2 PM - 8 PM
-      }
-      
-      if (!isValid) {
+      if (!isValidTime) {
         return res.status(400).json({
           success: false,
           error: 'Justin only works on Thursday from 6 PM to 10 PM and Friday from 2 PM to 8 PM',
           debug: {
-            parsedDate: parsedDateTime.toString(),
-            day,
+            date: datePart,
+            time: timePart,
+            dayOfWeek,
             hour
           }
         });
@@ -91,30 +89,19 @@ router.post('/appointment', async (req, res) => {
     const oauth2Client = await createJustinOAuth2Client();
     const calendar = google.calendar({ version: 'v3', auth: oauth2Client });
     
-    // Properly handle the datetime for calendar events
-    const rawDateTime = action === 'reschedule' ? newStartDateTime : startDateTime;
-    let dateTimeForCalendar;
-    
-    // If the datetime doesn't have a timezone offset, assume it's PT (-07:00)
-    if (!rawDateTime.match(/[+-]\d{2}:\d{2}$/)) {
-      dateTimeForCalendar = `${rawDateTime.replace(/Z$/, '')}-07:00`;
-    } else {
-      dateTimeForCalendar = rawDateTime;
-    }
-    
-    // Parse the date for start time
-    const startTime = new Date(dateTimeForCalendar);
-    // Calculate end time
-    const endTime = new Date(startTime.getTime() + (serviceDuration * 60000));
-    
+    // Handle different actions
     let result;
     
     switch (action) {
       case 'create':
+        // Parse the date for calendar - assuming startDateTime is in PT
+        const startTime = new Date(startDateTime);
+        const endTime = new Date(startTime.getTime() + (serviceDuration * 60000));
+        
         const eventDetails = {
           summary: `${serviceType}: ${clientName}`,
-          description: `Client: ${clientName}\nPhone: ${clientPhone}\nLocation: ${config.availability.location}`,
-          location: config.availability.location,
+          description: `Client: ${clientName}\nPhone: ${clientPhone}\nLocation: 1213 Alvarado Ave #84, Davis CA 95616`,
+          location: '1213 Alvarado Ave #84, Davis CA 95616',
           start: { 
             dateTime: startTime.toISOString(),
             timeZone: 'America/Los_Angeles' // Explicitly set Pacific Time
@@ -125,10 +112,8 @@ router.post('/appointment', async (req, res) => {
           }
         };
         
-        console.log('Creating calendar event with details:', JSON.stringify(eventDetails, null, 2));
-        
         const event = await calendar.events.insert({ 
-          calendarId: config.calendar.calendarId, 
+          calendarId: 'primary', 
           resource: eventDetails,
           sendUpdates: 'all'
         });
@@ -152,14 +137,68 @@ router.post('/appointment', async (req, res) => {
           eventLink: event.data.htmlLink,
           appointment: {
             startTime: startTime.toISOString(),
-            endTime: endTime.toISOString(),
-            pacificTime: new Date(startTime).toLocaleString('en-US', {
-              timeZone: 'America/Los_Angeles',
-              hour: 'numeric',
-              minute: 'numeric',
-              hour12: true
-            })
+            endTime: endTime.toISOString()
           }
+        };
+        break;
+        
+      case 'reschedule':
+        if (!eventId || !newStartDateTime) {
+          return res.status(400).json({
+            success: false,
+            error: 'Event ID and new start date-time are required for rescheduling'
+          });
+        }
+        
+        // Get existing event
+        const existingEvent = await calendar.events.get({
+          calendarId: 'primary',
+          eventId
+        });
+        
+        if (!existingEvent.data) {
+          return res.status(404).json({
+            success: false,
+            error: 'Appointment not found in calendar'
+          });
+        }
+        
+        // Calculate new times
+        const newStartTime = new Date(newStartDateTime);
+        const newEndTime = new Date(newStartTime.getTime() + (serviceDuration * 60000));
+        
+        // Update the event in Google Calendar
+        const updatedEvent = await calendar.events.update({
+          calendarId: 'primary',
+          eventId,
+          resource: {
+            ...existingEvent.data,
+            summary: serviceType ? `${serviceType}: ${clientName}` : existingEvent.data.summary,
+            start: { 
+              dateTime: newStartTime.toISOString(),
+              timeZone: 'America/Los_Angeles'
+            },
+            end: { 
+              dateTime: newEndTime.toISOString(),
+              timeZone: 'America/Los_Angeles'
+            }
+          },
+          sendUpdates: 'all'
+        });
+        
+        // Update in database
+        await appointmentOps.updateByEventId(eventId, {
+          start_time: newStartTime.toISOString(),
+          end_time: newEndTime.toISOString(),
+          service_type: serviceType || undefined
+        });
+        
+        result = {
+          success: true,
+          action: 'reschedule',
+          eventId: updatedEvent.data.id,
+          eventLink: updatedEvent.data.htmlLink,
+          message: 'Appointment successfully rescheduled'
         };
         break;
         
@@ -171,10 +210,10 @@ router.post('/appointment', async (req, res) => {
           });
         }
         
-        // Cancel in Google Calendar
+        // Delete from Google Calendar
         await calendar.events.delete({
-          calendarId: config.calendar.calendarId,
-          eventId: eventId,
+          calendarId: 'primary',
+          eventId,
           sendUpdates: 'all'
         });
         
@@ -184,48 +223,8 @@ router.post('/appointment', async (req, res) => {
         result = {
           success: true,
           action: 'cancel',
-          eventId: eventId
-        };
-        break;
-        
-      case 'reschedule':
-        if (!eventId || !newStartDateTime) {
-          return res.status(400).json({
-            success: false,
-            error: 'Event ID and new start time are required for rescheduling'
-          });
-        }
-        
-        // Get the existing event
-        const existingEvent = await calendar.events.get({
-          calendarId: config.calendar.calendarId,
-          eventId: eventId
-        });
-        
-        // Update the event
-        const updatedEvent = await calendar.events.update({
-          calendarId: config.calendar.calendarId,
-          eventId: eventId,
-          resource: {
-            ...existingEvent.data,
-            summary: `${serviceType}: ${clientName}`,
-            start: { dateTime: startTime.toISOString(), timeZone: config.calendar.timeZone },
-            end: { dateTime: endTime.toISOString(), timeZone: config.calendar.timeZone }
-          },
-          sendUpdates: 'all'
-        });
-        
-        // Update in database
-        await appointmentOps.updateAppointment(eventId, {
-          start_time: startTime.toISOString(),
-          end_time: endTime.toISOString()
-        });
-        
-        result = {
-          success: true,
-          action: 'reschedule',
-          eventId: updatedEvent.data.id,
-          eventLink: updatedEvent.data.htmlLink
+          eventId,
+          message: 'Appointment successfully cancelled'
         };
         break;
         
