@@ -30,7 +30,7 @@ module.exports = {
       startHour: 14, // 2 PM
       endHour: 20,   // 8 PM
     },
-    location: 'UC Davis Campus, 1213 Alvarado Ave #84, Davis CA 95616'
+    location: '1213 Alvarado Ave #84, Davis CA 95616'
   },
   
   // Validation helper function - UPDATED to check both Thursday and Friday
