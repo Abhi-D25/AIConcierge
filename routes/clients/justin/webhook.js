@@ -242,14 +242,78 @@ router.post('/appointment', async (req, res) => {
   }
 });
 
+router.get('/check-availability', async (req, res) => {
+  const { startDateTime, serviceDuration = 30 } = req.query;
+  
+  if (!startDateTime) {
+    return res.status(400).json({ 
+      success: false, 
+      error: 'startDateTime is required' 
+    });
+  }
+  
+  try {
+    const oauth2Client = await createJustinOAuth2Client();
+    const calendar = google.calendar({ version: 'v3', auth: oauth2Client });
+    
+    // Parse the date
+    const requestedTime = new Date(startDateTime);
+    
+    // Validate business hours
+    const day = requestedTime.getDay();
+    const hour = requestedTime.getHours();
+    
+    let isValidBusinessHour = false;
+    if (day === 4) { // Thursday
+      isValidBusinessHour = hour >= 18 && hour < 22; // 6 PM - 10 PM
+    } else if (day === 5) { // Friday
+      isValidBusinessHour = hour >= 14 && hour < 20; // 2 PM - 8 PM
+    }
+    
+    if (!isValidBusinessHour) {
+      return res.status(200).json({
+        success: true,
+        isAvailable: false,
+        reason: "Outside business hours",
+        businessHours: {
+          thursday: "6:00 PM - 10:00 PM PT",
+          friday: "2:00 PM - 8:00 PM PT"
+        }
+      });
+    }
+    
+    // Calculate end time
+    const endTime = new Date(requestedTime.getTime() + (parseInt(serviceDuration) * 60000));
+    
+    // Check calendar for conflicts
+    const events = await calendar.events.list({
+      calendarId: 'primary',
+      timeMin: requestedTime.toISOString(),
+      timeMax: endTime.toISOString(),
+      singleEvents: true,
+      orderBy: 'startTime'
+    });
+    
+    const isAvailable = events.data.items.length === 0;
+    
+    return res.status(200).json({
+      success: true,
+      isAvailable,
+      requestedTime: {
+        start: requestedTime.toISOString(),
+        end: endTime.toISOString()
+      },
+      serviceDuration: parseInt(serviceDuration)
+    });
+  } catch (error) {
+    console.error('Error checking availability:', error);
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
 
 // Get barber's availability
-router.get('/thursday-slots', async (req, res) => {
-  const { 
-    findNextAvailable = false,
-    numSlots = 3, 
-    serviceDuration = 30 
-  } = req.query;
+router.get('/find-available-slots', async (req, res) => {
+  const { numSlots = 3, serviceDuration = 30 } = req.query;
   
   try {
     const oauth2Client = await createJustinOAuth2Client();
@@ -322,8 +386,8 @@ router.get('/thursday-slots', async (req, res) => {
       
       return res.status(200).json({
         success: true,
-        slots: limitedSlots,
-        serviceDuration: parseInt(serviceDuration, 10),
+        slots: availableSlots,
+        serviceDuration: parseInt(serviceDuration),
         location: "1213 Alvarado Ave #84, Davis CA 95616"
       });
     } else {
