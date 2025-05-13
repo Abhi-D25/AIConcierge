@@ -34,23 +34,32 @@ module.exports = {
   },
   
   // Validation helper function - UPDATED to check both Thursday and Friday
-  isValidAppointmentTime: function(dateTime) {
-    const date = new Date(dateTime);
+  isValidAppointmentTime: function(dateTimeStr) {
+    // Parse the input datetime string directly
+    const date = new Date(dateTimeStr);
+    
+    // Debug info
+    console.log('Validating date:', {
+      input: dateTimeStr,
+      parsed: date.toString(),
+      day: date.getDay(),
+      hour: date.getHours()
+    });
+    
+    // Check for Thursday (day 4) or Friday (day 5)
     const day = date.getDay();
     const hour = date.getHours();
     
-    if (day === this.availability.thursday.day) {
-      // Thursday validation (6 PM - 10 PM)
-      return hour >= this.availability.thursday.startHour && 
-             hour < this.availability.thursday.endHour;
-    }
-    else if (day === this.availability.friday.day) {
-      // Friday validation (2 PM - 8 PM)
-      return hour >= this.availability.friday.startHour && 
-             hour < this.availability.friday.endHour;
+    if (day === 4) { // Thursday
+      // Valid hours: 6 PM - 10 PM (18:00 - 22:00)
+      return hour >= 18 && hour < 22;
+    } 
+    else if (day === 5) { // Friday
+      // Valid hours: 2 PM - 8 PM (14:00 - 20:00)
+      return hour >= 14 && hour < 20;
     }
     
-    // Not Thursday or Friday
+    // Not a Thursday or Friday
     return false;
   }
 };

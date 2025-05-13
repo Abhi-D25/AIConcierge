@@ -33,6 +33,35 @@ router.post('/appointment', async (req, res) => {
     isCancelling = false
   } = req.body;
   
+  // Add debug logging
+  console.log('Request body:', req.body);
+  
+  // Parse the date explicitly
+  const requestedDateTime = new Date(startDateTime);
+  console.log('Parsed date details:', {
+    original: startDateTime,
+    parsed: requestedDateTime.toString(),
+    day: requestedDateTime.getDay(),        // 0-6 (0 is Sunday)
+    date: requestedDateTime.getDate(),      // Day of month
+    month: requestedDateTime.getMonth() + 1, // 1-12
+    year: requestedDateTime.getFullYear(),  
+    hours: requestedDateTime.getHours(),    // 0-23
+    minutes: requestedDateTime.getMinutes(),
+    timezoneOffset: requestedDateTime.getTimezoneOffset() / 60 // In hours
+  });
+  
+  // Check valid times
+  const isThursday = requestedDateTime.getDay() === 4;
+  const isFriday = requestedDateTime.getDay() === 5;
+  const hour = requestedDateTime.getHours();
+  
+  console.log('Validation checks:', {
+    isThursday,
+    isFriday,
+    hour,
+    isValidThursday: isThursday && hour >= 18 && hour < 22,
+    isValidFriday: isFriday && hour >= 14 && hour < 20
+  });
   // Format the duration if it's a string
   const serviceDuration = typeof duration === 'string' ? parseInt(duration, 10) : duration;
   
