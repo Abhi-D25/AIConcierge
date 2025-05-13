@@ -33,6 +33,9 @@ router.post('/appointment', async (req, res) => {
     isCancelling = false
   } = req.body;
   
+  // Format the duration if it's a string
+  const serviceDuration = typeof duration === 'string' ? parseInt(duration, 10) : duration;
+  
   // Validate required fields
   if (!clientPhone) {
     return res.status(400).json({
@@ -46,12 +49,12 @@ router.post('/appointment', async (req, res) => {
   if (isRescheduling) action = 'reschedule';
   if (isCancelling) action = 'cancel';
   
-  // For creation and rescheduling, validate Thursday constraint
+  // For creation and rescheduling, validate Thursday and Friday constraints
   if ((action === 'create' || action === 'reschedule') && 
-      !config.isValidThursdayTime(action === 'reschedule' ? newStartDateTime : startDateTime)) {
+      !config.isValidAppointmentTime(action === 'reschedule' ? newStartDateTime : startDateTime)) {
     return res.status(400).json({
       success: false,
-      error: 'Justin only works Thursdays 1-5 PM'
+      error: 'Justin only works on Thursday from 6 PM to 10 PM and Friday from 2 PM to 8 PM'
     });
   }
   
@@ -61,7 +64,7 @@ router.post('/appointment', async (req, res) => {
     
     // Use appropriate start time based on action
     const startTime = new Date(action === 'reschedule' ? newStartDateTime : startDateTime);
-    const endTime = new Date(startTime.getTime() + (duration * 60000));
+    const endTime = new Date(startTime.getTime() + (serviceDuration * 60000));
     
     let result;
     
@@ -69,7 +72,8 @@ router.post('/appointment', async (req, res) => {
       case 'create':
         const eventDetails = {
           summary: `${serviceType}: ${clientName}`,
-          description: `Client: ${clientName}\nPhone: ${clientPhone}\nBarber: ${preferredBarberId || 'JUSTIN_BARBER_ID'}`,
+          description: `Client: ${clientName}\nPhone: ${clientPhone}\nLocation: ${config.availability.location}`,
+          location: config.availability.location,
           start: { dateTime: startTime.toISOString(), timeZone: config.calendar.timeZone },
           end: { dateTime: endTime.toISOString(), timeZone: config.calendar.timeZone }
         };
@@ -89,7 +93,7 @@ router.post('/appointment', async (req, res) => {
           end_time: endTime.toISOString(),
           google_calendar_event_id: event.data.id,
           client_name: clientName,
-          barber_id: preferredBarberId || 'JUSTIN_BARBER_ID'
+          barber_id: preferredBarberId || process.env.JUSTIN_BARBER_ID
         });
         
         result = { 
@@ -179,6 +183,7 @@ router.post('/appointment', async (req, res) => {
     return res.status(500).json({ success: false, error: error.message });
   }
 });
+
 
 // Get barber's availability
 router.get('/thursday-slots', async (req, res) => {
