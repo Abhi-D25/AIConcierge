@@ -256,13 +256,38 @@ router.get('/check-availability', async (req, res) => {
     const oauth2Client = await createJustinOAuth2Client();
     const calendar = google.calendar({ version: 'v3', auth: oauth2Client });
     
-    // Parse the date
+    // First, extract components directly from the string to avoid time zone conversion issues
+    // Format expected: YYYY-MM-DDThh:mm:ss-07:00
+    const dateParts = startDateTime.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/);
+    if (!dateParts) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid date format. Expected format: YYYY-MM-DDThh:mm:ss-07:00'
+      });
+    }
+    
+    // Create a Date object - this will be in UTC internally
     const requestedTime = new Date(startDateTime);
     
-    // Validate business hours
-    const day = requestedTime.getDay();
-    const hour = requestedTime.getHours();
+    // Extract day of week (0-6, where 0 is Sunday) and hour (in PT) directly from the string
+    const year = parseInt(dateParts[1], 10);
+    const month = parseInt(dateParts[2], 10) - 1; // 0-based month
+    const date = parseInt(dateParts[3], 10);
+    const hour = parseInt(dateParts[4], 10); // Hour in PT since input is in PT
     
+    // Calculate day of week from the parsed components
+    const tempDate = new Date(year, month, date);
+    const day = tempDate.getDay();
+    
+    console.log('Time validation:', {
+      input: startDateTime,
+      parsedDate: `${year}-${month+1}-${date}`,
+      parsedHour: hour,
+      day,
+      dayName: ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][day]
+    });
+    
+    // Validate business hours directly using the extracted components
     let isValidBusinessHour = false;
     if (day === 4) { // Thursday
       isValidBusinessHour = hour >= 18 && hour < 22; // 6 PM - 10 PM
@@ -278,6 +303,13 @@ router.get('/check-availability', async (req, res) => {
         businessHours: {
           thursday: "6:00 PM - 10:00 PM PT",
           friday: "2:00 PM - 8:00 PM PT"
+        },
+        debug: {
+          requestedDay: day,
+          requestedDayName: ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][day],
+          requestedHour: hour,
+          isFriday: day === 5,
+          hourCheck: hour >= 14 && hour < 20
         }
       });
     }
