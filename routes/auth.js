@@ -97,8 +97,8 @@ router.get('/auth/google/callback', async (req, res) => {
     if (req.session.phoneNumber) {
       // Use the name from the registration form (stored in session) instead of Google account
       const registrantName = req.session.registrantName || data.name;
-      const businessType = req.session.businessType || 'barber';
-      const serviceType = req.session.serviceType || 'barber';
+      const businessType = req.session.businessType;
+      const serviceType = req.session.serviceType;
       const registrantEmail = req.session.email || data.email;
       
       console.log('Processing registration for:', {

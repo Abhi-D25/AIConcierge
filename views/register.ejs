@@ -31,7 +31,7 @@
             </p>
             
             <form action="/register" method="POST">
-              <input type="hidden" name="service_type" value="makeup_artist">
+              <input type="hidden" name="service_type" id="service_type" value="makeup_artist">
               
               <div class="mb-3">
                 <label for="name" class="form-label">Your Full Name</label>
@@ -65,17 +65,24 @@
               
               <script>
                 function updateServiceType() {
-                  const businessType = document.getElementById('businessType').value;
-                  const serviceTypeInput = document.getElementById('service_type');
-                  
-                  if (businessType === 'makeup_artist') {
-                    serviceTypeInput.value = 'makeup_artist';
-                  } else if (businessType === 'barber' || businessType === 'beauty_salon' || businessType === 'other') {
-                    serviceTypeInput.value = 'barber';
-                  } else {
-                    serviceTypeInput.value = businessType;
+                    const businessType = document.getElementById('businessType').value;
+                    const serviceTypeInput = document.getElementById('service_type');
+                    
+                    // Map business types to service types
+                    switch(businessType) {
+                      case 'makeup_artist':
+                        serviceTypeInput.value = 'makeup_artist';
+                        break;
+                      case 'barber':
+                        serviceTypeInput.value = 'barber';
+                        break;
+                      case 'other':
+                        serviceTypeInput.value = 'barber'; // These use the barber system
+                        break;
+                      default:
+                        serviceTypeInput.value = 'barber';
+                    }
                   }
-                }
               </script>
               
               <div class="d-grid gap-2 mt-4">
