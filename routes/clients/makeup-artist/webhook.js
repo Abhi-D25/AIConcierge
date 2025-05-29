@@ -2058,4 +2058,251 @@ router.post('/test-create-client', async (req, res) => {
     }
   });
 
+  router.post('/block-calendar', async (req, res) => {
+    const { startDate, endDate, reason = 'Blocked by makeup artist' } = req.body;
+    
+    if (!startDate || !endDate) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Start date and end date are required' 
+      });
+    }
+    
+    try {
+      // Get artist's Google Calendar credentials
+      const { data: artist, error: artistError } = await supabase
+        .from('makeup_artists')
+        .select('*')
+        .single();
+      
+      if (artistError || !artist?.refresh_token) {
+        return res.status(404).json({ 
+          success: false, 
+          error: 'Makeup artist not found or not authorized' 
+        });
+      }
+      
+      const oauth2Client = createOAuth2Client(artist.refresh_token);
+      const calendar = google.calendar({ version: 'v3', auth: oauth2Client });
+      const calendarId = artist.selected_calendar_id || 'primary';
+      
+      // Create all-day blocking event
+      const eventDetails = {
+        summary: `🚫 BLOCKED - ${reason}`,
+        description: `Calendar blocked by Command Center AI\nReason: ${reason}`,
+        start: {
+          date: startDate, // All-day event
+          timeZone: 'America/Chicago'
+        },
+        end: {
+          date: endDate,
+          timeZone: 'America/Chicago'
+        },
+        transparency: 'opaque' // Shows as busy
+      };
+      
+      const event = await calendar.events.insert({ 
+        calendarId, 
+        resource: eventDetails
+      });
+      
+      return res.status(200).json({
+        success: true,
+        message: `Calendar blocked from ${startDate} to ${endDate}`,
+        eventId: event.data.id,
+        eventLink: event.data.htmlLink
+      });
+    } catch (e) {
+      console.error('Error in block-calendar:', e);
+      return res.status(500).json({ 
+        success: false, 
+        error: e.message 
+      });
+    }
+  });
+  
+  // Get appointments for date range with formatting
+  router.get('/get-schedule-range', async (req, res) => {
+    const { startDate, endDate, format = 'detailed' } = req.query;
+    
+    if (!startDate || !endDate) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Start date and end date are required' 
+      });
+    }
+    
+    try {
+      // Get appointments from database
+      const { data: appointments, error } = await supabase
+        .from('appointments')
+        .select(`
+          *,
+          client:clients(name, phone_number)
+        `)
+        .gte('start_time', startDate)
+        .lte('start_time', endDate)
+        .order('start_time', { ascending: true });
+      
+      if (error) {
+        throw error;
+      }
+      
+      // Format response based on request
+      let formattedSchedule = '';
+      if (format === 'summary') {
+        formattedSchedule = appointments.map(apt => {
+          const date = new Date(apt.start_time).toLocaleDateString();
+          const time = new Date(apt.start_time).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+          return `${date} ${time} - ${apt.client?.name || 'Unknown'} (${apt.status})`;
+        }).join('\n');
+      } else {
+        formattedSchedule = appointments.map(apt => {
+          const date = new Date(apt.start_time).toLocaleDateString();
+          const time = new Date(apt.start_time).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+          return `📅 ${date} at ${time}\n👤 ${apt.client?.name || 'Unknown'}\n📞 ${apt.client?.phone_number || 'No phone'}\n💰 ${apt.deposit_status || 'pending'}\n📝 ${apt.status}\n---`;
+        }).join('\n\n');
+      }
+      
+      return res.status(200).json({
+        success: true,
+        appointments: appointments,
+        formattedSchedule: formattedSchedule,
+        count: appointments.length,
+        dateRange: { startDate, endDate }
+      });
+    } catch (e) {
+      console.error('Error in get-schedule-range:', e);
+      return res.status(500).json({ 
+        success: false, 
+        error: e.message 
+      });
+    }
+  });
+  
+  // Confirm appointment on hold
+  router.post('/confirm-hold-appointment', async (req, res) => {
+    const { clientPhone, clientName, appointmentId } = req.body;
+    
+    if (!clientPhone && !appointmentId) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Client phone or appointment ID is required' 
+      });
+    }
+    
+    try {
+      // Find the appointment
+      let query = supabase
+        .from('appointments')
+        .select('*')
+        .eq('status', 'on_hold');
+      
+      if (appointmentId) {
+        query = query.eq('id', appointmentId);
+      } else {
+        query = query.eq('client_phone', clientPhone);
+      }
+      
+      const { data: appointments, error } = await query.limit(1);
+      
+      if (error) {
+        throw error;
+      }
+      
+      if (!appointments || appointments.length === 0) {
+        return res.status(404).json({
+          success: false,
+          error: 'No appointment on hold found for this client'
+        });
+      }
+      
+      const appointment = appointments[0];
+      
+      // Update appointment status to confirmed
+      const { data: updatedAppointment, error: updateError } = await supabase
+        .from('appointments')
+        .update({ 
+          status: 'confirmed',
+          deposit_status: 'paid',
+          updated_at: new Date().toISOString() 
+        })
+        .eq('id', appointment.id)
+        .select();
+      
+      if (updateError) {
+        throw updateError;
+      }
+      
+      return res.status(200).json({
+        success: true,
+        message: 'Appointment confirmed successfully',
+        appointment: updatedAppointment[0],
+        clientName: clientName || appointment.client_name,
+        appointmentTime: appointment.start_time
+      });
+    } catch (e) {
+      console.error('Error in confirm-hold-appointment:', e);
+      return res.status(500).json({ 
+        success: false, 
+        error: e.message 
+      });
+    }
+  });
+  
+  // Get outstanding balances
+  router.get('/get-outstanding-balances', async (req, res) => {
+    const { minimumAmount = 0 } = req.query;
+    
+    try {
+      // Get appointments with outstanding balances
+      const { data: appointments, error } = await supabase
+        .from('appointments')
+        .select(`
+          *,
+          client:clients(name, phone_number, email)
+        `)
+        .neq('payment_status', 'paid')
+        .gte('total_amount', minimumAmount)
+        .order('total_amount', { ascending: false });
+      
+      if (error) {
+        throw error;
+      }
+      
+      // Calculate outstanding amounts
+      const outstandingBalances = appointments.map(apt => {
+        const totalAmount = apt.total_amount || 0;
+        const paidAmount = (apt.deposit_amount || 0) + (apt.payment_amount || 0);
+        const outstanding = totalAmount - paidAmount;
+        
+        return {
+          clientName: apt.client?.name || 'Unknown',
+          clientPhone: apt.client?.phone_number,
+          appointmentDate: apt.start_time,
+          totalAmount: totalAmount,
+          paidAmount: paidAmount,
+          outstandingAmount: outstanding,
+          status: apt.status,
+          paymentStatus: apt.payment_status
+        };
+      }).filter(balance => balance.outstandingAmount > 0);
+      
+      const totalOutstanding = outstandingBalances.reduce((sum, balance) => sum + balance.outstandingAmount, 0);
+      
+      return res.status(200).json({
+        success: true,
+        outstandingBalances: outstandingBalances,
+        totalOutstanding: totalOutstanding,
+        count: outstandingBalances.length
+      });
+    } catch (e) {
+      console.error('Error in get-outstanding-balances:', e);
+      return res.status(500).json({ 
+        success: false, 
+        error: e.message 
+      });
+    }
+  });
+
 module.exports = router;
