@@ -88,7 +88,9 @@ router.get('/get-client-info', async (req, res) => {
         skin_tone: client.skin_tone,
         allergies: client.allergies,
         preferred_service_type: client.preferred_service_type,
-        special_notes: client.special_notes
+        special_notes: client.special_notes,
+        status: client.status || 'Lead', // ADD THIS
+        status_notes: client.status_notes // ADD THIS
       },
       upcomingAppointment
     });
