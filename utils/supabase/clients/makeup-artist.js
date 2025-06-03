@@ -13,7 +13,7 @@ if (!supabaseUrl || !supabaseKey) {
 
 const supabase = createClient(supabaseUrl, supabaseKey);
 
-// Client operations
+// Client operations - UPDATED WITH STATUS MANAGEMENT
 const clientOps = {
     async getByPhoneNumber(phoneNumber) {
       console.log('Fetching client with phone number:', phoneNumber);
@@ -43,7 +43,9 @@ const clientOps = {
         skin_tone = null,
         allergies = null,
         preferred_service_type = null,
-        special_notes = null
+        special_notes = null,
+        status = 'Lead', // NEW: Default status for new clients
+        status_notes = null // NEW: Notes about status changes
       } = clientData;
       
       // Check if client exists
@@ -53,19 +55,29 @@ const clientOps = {
         if (existingClient) {
           console.log('Updating existing client:', existingClient.id);
           
-          // Update existing client
+          // Update existing client - only update provided fields
+          const updateData = {
+            updated_at: new Date().toISOString()
+          };
+          
+          // Only update fields that are provided and different
+          if (name && name !== existingClient.name) updateData.name = name;
+          if (email && email !== existingClient.email) updateData.email = email;
+          if (skin_type && skin_type !== existingClient.skin_type) updateData.skin_type = skin_type;
+          if (skin_tone && skin_tone !== existingClient.skin_tone) updateData.skin_tone = skin_tone;
+          if (allergies && allergies !== existingClient.allergies) updateData.allergies = allergies;
+          if (preferred_service_type && preferred_service_type !== existingClient.preferred_service_type) {
+            updateData.preferred_service_type = preferred_service_type;
+          }
+          if (special_notes && special_notes !== existingClient.special_notes) updateData.special_notes = special_notes;
+          
+          // NEW: Handle status updates
+          if (status && status !== existingClient.status) updateData.status = status;
+          if (status_notes) updateData.status_notes = status_notes;
+          
           const { data, error } = await supabase
             .from('clients')
-            .update({
-              name: name || existingClient.name,
-              email: email || existingClient.email,
-              skin_type: skin_type || existingClient.skin_type,
-              skin_tone: skin_tone || existingClient.skin_tone,
-              allergies: allergies || existingClient.allergies,
-              preferred_service_type: preferred_service_type || existingClient.preferred_service_type,
-              special_notes: special_notes || existingClient.special_notes,
-              updated_at: new Date().toISOString()
-            })
+            .update(updateData)
             .eq('id', existingClient.id)
             .select();
             
@@ -88,7 +100,9 @@ const clientOps = {
             skin_tone,
             allergies,
             preferred_service_type,
-            special_notes
+            special_notes,
+            status: status || 'Lead', // NEW: Set initial status
+            status_notes
           };
           
           console.log('Insert data:', insertData);
@@ -110,10 +124,93 @@ const clientOps = {
         console.error('Exception in createOrUpdate:', err);
         return null;
       }
+    },
+
+    // NEW: Status management method
+    async updateStatus(phoneNumber, newStatus, notes = null) {
+      console.log(`Updating client status for ${phoneNumber} to ${newStatus}`);
+      
+      const validStatuses = ['Lead', 'Active', 'Needs Confirmation', 'Payment Due'];
+      if (!validStatuses.includes(newStatus)) {
+        console.error('Invalid status:', newStatus);
+        return null;
+      }
+      
+      const updateData = {
+        status: newStatus,
+        updated_at: new Date().toISOString()
+      };
+      
+      if (notes) {
+        updateData.status_notes = notes;
+      }
+      
+      const { data, error } = await supabase
+        .from('clients')
+        .update(updateData)
+        .eq('phone_number', phoneNumber)
+        .select();
+      
+      if (error) {
+        console.error('Error updating client status:', error);
+        return null;
+      }
+      
+      console.log('Client status updated successfully:', data[0]);
+      return data[0];
+    },
+
+    // NEW: Get clients by status
+    async getByStatus(status) {
+      console.log(`Fetching clients with status: ${status}`);
+      
+      const { data, error } = await supabase
+        .from('clients')
+        .select('*')
+        .eq('status', status)
+        .order('updated_at', { ascending: false });
+      
+      if (error) {
+        console.error('Error fetching clients by status:', error);
+        return [];
+      }
+      
+      return data;
+    },
+
+    // NEW: Get client with appointment summary
+    async getWithAppointmentSummary(phoneNumber) {
+      const client = await this.getByPhoneNumber(phoneNumber);
+      if (!client) return null;
+      
+      // Get pending appointments
+      const { data: pendingAppointments } = await supabase
+        .from('appointments')
+        .select('*')
+        .eq('client_phone', phoneNumber)
+        .eq('status', 'pending_confirmation')
+        .order('created_at', { ascending: false });
+      
+      // Get upcoming appointments
+      const { data: upcomingAppointments } = await supabase
+        .from('appointments')
+        .select('*')
+        .eq('client_phone', phoneNumber)
+        .in('status', ['pending', 'confirmed'])
+        .gte('start_time', new Date().toISOString())
+        .order('start_time', { ascending: true });
+      
+      return {
+        ...client,
+        pendingAppointments: pendingAppointments || [],
+        upcomingAppointments: upcomingAppointments || [],
+        hasPendingConfirmations: (pendingAppointments || []).length > 0,
+        hasUpcomingAppointments: (upcomingAppointments || []).length > 0
+      };
     }
   };
 
-// Service operations
+// Service operations (unchanged)
 const serviceOps = {
   async getAll() {
     const { data, error } = await supabase
@@ -160,7 +257,7 @@ const serviceOps = {
   }
 };
 
-// Location operations
+// Location operations (unchanged)
 const locationOps = {
   async getAll() {
     const { data, error } = await supabase
@@ -207,7 +304,7 @@ const locationOps = {
   }
 };
 
-// Appointment operations
+// Appointment operations (unchanged)
 const appointmentOps = {
   async create(appointmentData) {
     const { 
@@ -331,10 +428,29 @@ const appointmentOps = {
     }
     
     return data;
+  },
+
+  // NEW: Get pending confirmations
+  async getPendingConfirmations() {
+    const { data, error } = await supabase
+      .from('appointments')
+      .select(`
+        *,
+        client:clients(name, phone_number, skin_type, skin_tone, allergies)
+      `)
+      .eq('status', 'pending_confirmation')
+      .order('created_at', { ascending: true });
+    
+    if (error) {
+      console.error('Error fetching pending confirmations:', error);
+      return [];
+    }
+    
+    return data;
   }
 };
 
-// Group bookings operations
+// Group bookings operations (unchanged)
 const groupBookingOps = {
   async create(groupBookingData) {
     const { 
@@ -384,7 +500,7 @@ const groupBookingOps = {
   }
 };
 
-// Portfolio operations
+// Portfolio operations (unchanged)
 const portfolioOps = {
   async getAll(limit = 10) {
     const { data, error } = await supabase
@@ -443,7 +559,7 @@ const portfolioOps = {
   }
 };
 
-// Conversation operations
+// Conversation operations (unchanged)
 const conversationOps = {
   async getOrCreateSession(phoneNumber) {
     // Check if session exists
@@ -536,6 +652,7 @@ const conversationOps = {
   }
 };
 
+// Makeup Artist operations (unchanged)
 const makeupArtistOps = {
     async getAll() {
       const { data, error } = await supabase
