@@ -2058,4 +2058,270 @@ router.post('/test-create-client', async (req, res) => {
     }
   });
 
+  router.post('/store-pending-appointment', async (req, res) => {
+    const { 
+      clientPhone, 
+      clientName = "New Client", 
+      serviceType = "Makeup Service", 
+      location = "Client's Location", 
+      specificAddress,
+      startDateTime, 
+      duration = 60, 
+      notes = '', 
+      skinType,
+      skinTone,
+      allergies,
+      eventType = 'general'
+    } = req.body;
+    
+    if (!clientPhone || !startDateTime) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Client phone and start date-time are required' 
+      });
+    }
+    
+    try {
+      // Format phone number
+      let formattedPhone = clientPhone;
+      const digits = formattedPhone.replace(/\D/g, '');
+      if (!formattedPhone.startsWith('+')) {
+        formattedPhone = digits.length === 10 ? `+1${digits}` : `+${digits}`;
+      }
+      
+      // Get or create client
+      let client = await clientOps.getByPhoneNumber(formattedPhone);
+      
+      if (!client) {
+        console.log(`Creating new client: ${clientName} (${formattedPhone})`);
+        client = await clientOps.createOrUpdate({ 
+          phone_number: formattedPhone, 
+          name: clientName,
+          skin_type: skinType,
+          skin_tone: skinTone,
+          allergies: allergies,
+          status: 'Lead'
+        });
+      } else {
+        // Update client status to 'Needs Confirmation'
+        const { data, error } = await supabase
+          .from('clients')
+          .update({ 
+            status: 'Needs Confirmation',
+            updated_at: new Date().toISOString()
+          })
+          .eq('phone_number', formattedPhone)
+          .select();
+          
+        if (!error && data[0]) {
+          client = data[0];
+        }
+      }
+      
+      // Calculate end time
+      const startDate = new Date(startDateTime);
+      const endDate = new Date(startDate.getTime() + (duration * 60000));
+      const endDateTime = endDate.toISOString().replace(/\.\d{3}Z$/, '');
+      
+      // Create pending appointment record
+      const appointmentData = {
+        client_phone: formattedPhone,
+        service_type: serviceType,
+        event_type: eventType,
+        location_description: location,
+        specific_address: specificAddress,
+        start_time: startDateTime,
+        end_time: endDateTime,
+        duration_minutes: duration,
+        status: 'pending_confirmation',
+        artist_confirmation_status: 'pending',
+        form_submission_status: 'pending',
+        notes: notes,
+        google_calendar_event_id: null
+      };
+      
+      console.log('Creating pending appointment:', JSON.stringify(appointmentData, null, 2));
+      
+      const { data: appointment, error: apptError } = await supabase
+        .from('appointments')
+        .insert(appointmentData)
+        .select();
+      
+      if (apptError) {
+        console.error('Error creating pending appointment:', apptError);
+        return res.status(500).json({ 
+          success: false, 
+          error: 'Failed to store pending appointment: ' + apptError.message 
+        });
+      }
+      
+      console.log('Pending appointment created successfully:', appointment[0].id);
+      
+      return res.status(200).json({
+        success: true,
+        action: 'store_pending',
+        appointmentId: appointment[0].id,
+        appointment: appointment[0],
+        client: client,
+        message: 'Pending appointment stored successfully. Awaiting artist confirmation.'
+      });
+    } catch (e) {
+      console.error('Error in store-pending-appointment:', e);
+      return res.status(500).json({ 
+        success: false, 
+        error: e.message 
+      });
+    }
+  });
+  
+  // 2. Update client status
+  router.post('/update-client-status', async (req, res) => {
+    const { phoneNumber, status, notes } = req.body;
+    
+    if (!phoneNumber || !status) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Phone number and status are required' 
+      });
+    }
+    
+    // Validate status
+    const validStatuses = ['Lead', 'Active', 'Needs Confirmation', 'Payment Due'];
+    if (!validStatuses.includes(status)) {
+      return res.status(400).json({ 
+        success: false, 
+        error: `Invalid status. Must be one of: ${validStatuses.join(', ')}` 
+      });
+    }
+    
+    try {
+      // Format phone number
+      let formattedPhone = phoneNumber;
+      const digits = formattedPhone.replace(/\D/g, '');
+      if (!formattedPhone.startsWith('+')) {
+        formattedPhone = digits.length === 10 ? `+1${digits}` : `+${digits}`;
+      }
+      
+      // Update client status
+      const updateData = {
+        status: status,
+        updated_at: new Date().toISOString()
+      };
+      
+      if (notes) {
+        updateData.status_notes = notes;
+      }
+      
+      const { data, error } = await supabase
+        .from('clients')
+        .update(updateData)
+        .eq('phone_number', formattedPhone)
+        .select();
+      
+      if (error) {
+        console.error('Error updating client status:', error);
+        return res.status(500).json({ 
+          success: false, 
+          error: 'Failed to update client status: ' + error.message 
+        });
+      }
+      
+      if (!data || data.length === 0) {
+        return res.status(404).json({ 
+          success: false, 
+          error: 'Client not found' 
+        });
+      }
+      
+      return res.status(200).json({
+        success: true,
+        message: 'Client status updated successfully',
+        client: data[0],
+        newStatus: status
+      });
+    } catch (e) {
+      console.error('Error in update-client-status:', e);
+      return res.status(500).json({ 
+        success: false, 
+        error: e.message 
+      });
+    }
+  });
+  
+  // 3. Get client status and appointment info
+  router.get('/get-client-status', async (req, res) => {
+    const { phoneNumber } = req.query;
+    
+    if (!phoneNumber) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Phone number is required' 
+      });
+    }
+    
+    try {
+      // Format phone number
+      let formattedPhone = phoneNumber;
+      const digits = formattedPhone.replace(/\D/g, '');
+      if (!formattedPhone.startsWith('+')) {
+        formattedPhone = digits.length === 10 ? `+1${digits}` : `+${digits}`;
+      }
+      
+      // Get client
+      const client = await clientOps.getByPhoneNumber(formattedPhone);
+      
+      if (!client) {
+        return res.status(404).json({ 
+          success: false, 
+          error: 'Client not found' 
+        });
+      }
+      
+      // Get pending appointments
+      const { data: pendingAppointments, error: pendingError } = await supabase
+        .from('appointments')
+        .select('*')
+        .eq('client_phone', formattedPhone)
+        .eq('status', 'pending_confirmation')
+        .order('created_at', { ascending: false });
+      
+      // Get upcoming confirmed appointments
+      const { data: upcomingAppointments, error: upcomingError } = await supabase
+        .from('appointments')
+        .select('*')
+        .eq('client_phone', formattedPhone)
+        .in('status', ['pending', 'confirmed'])
+        .gte('start_time', new Date().toISOString())
+        .order('start_time', { ascending: true });
+      
+      // Get appointment history
+      const { data: appointmentHistory, error: historyError } = await supabase
+        .from('appointments')
+        .select('*')
+        .eq('client_phone', formattedPhone)
+        .order('created_at', { ascending: false })
+        .limit(5);
+      
+      return res.status(200).json({
+        success: true,
+        client: client,
+        pendingAppointments: pendingAppointments || [],
+        upcomingAppointments: upcomingAppointments || [],
+        appointmentHistory: appointmentHistory || [],
+        summary: {
+          status: client.status,
+          hasPendingConfirmations: (pendingAppointments || []).length > 0,
+          hasUpcomingAppointments: (upcomingAppointments || []).length > 0,
+          totalAppointments: (appointmentHistory || []).length
+        }
+      });
+    } catch (e) {
+      console.error('Error in get-client-status:', e);
+      return res.status(500).json({ 
+        success: false, 
+        error: e.message 
+      });
+    }
+  });
+
 module.exports = router;
