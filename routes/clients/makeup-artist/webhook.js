@@ -271,9 +271,9 @@ router.post('/store-skin-preferences', async (req, res) => {
 router.post('/client-appointment', async (req, res) => {
     let { 
       clientPhone, 
-      clientName = "New Client", 
-      serviceType = "Makeup Service", 
-      location = "Client's Location", 
+      clientName, 
+      serviceType, 
+      location, 
       specificAddress,
       startDateTime, 
       endDateTime,
