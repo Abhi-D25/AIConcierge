@@ -583,8 +583,8 @@ router.post('/client-appointment', async (req, res) => {
           // Create appointment record in database
           const appointmentData = {
             client_phone: clientPhone,
-            service_id: null,        // Not using service_id
-            location_id: null,       // Not using location_id
+            service_type: serviceType,
+            location_description: location,
             specific_address: specificAddress,
             start_time: startDateTime,
             end_time: finalEndDateTime,
