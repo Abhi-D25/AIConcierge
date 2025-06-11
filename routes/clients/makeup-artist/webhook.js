@@ -1541,139 +1541,6 @@ router.post('/clear-temp-messages', async (req, res) => {
   }
 });
 
-// 4. PAYMENTS & DEPOSITS ENDPOINTS
-
-// Create payment link
-router.post('/create-payment-link', async (req, res) => {
-  const { appointmentId, amount, description } = req.body;
-  
-  if (!appointmentId || !amount) {
-    return res.status(400).json({ 
-      success: false, 
-      error: 'Appointment ID and amount are required' 
-    });
-  }
-  
-  try {
-    // For simplicity, we're just returning a mock payment link
-    // In a real implementation, you'd integrate with a payment provider like Stripe
-    
-    const paymentLink = `https://example.com/pay/${appointmentId}?amount=${amount}`;
-    
-    // Update appointment with pending payment info
-    const { data, error } = await supabase
-      .from('appointments')
-      .update({
-        deposit_amount: amount,
-        deposit_status: 'pending',
-        payment_link: paymentLink,
-        updated_at: new Date()
-      })
-      .eq('id', appointmentId)
-      .select();
-    
-    if (error) {
-      throw error;
-    }
-    
-    return res.status(200).json({
-      success: true,
-      paymentLink,
-      message: 'Payment link created',
-      appointment: data[0]
-    });
-  } catch (e) {
-    console.error('Error in create-payment-link:', e);
-    return res.status(500).json({ 
-      success: false, 
-      error: e.message 
-    });
-  }
-});
-
-// Check payment status
-router.get('/check-payment-status', async (req, res) => {
-  const { appointmentId } = req.query;
-  
-  if (!appointmentId) {
-    return res.status(400).json({ 
-      success: false, 
-      error: 'Appointment ID is required' 
-    });
-  }
-  
-  try {
-    const { data, error } = await supabase
-      .from('appointments')
-      .select('id, deposit_amount, deposit_status, payment_status, total_amount')
-      .eq('id', appointmentId)
-      .single();
-    
-    if (error) {
-      throw error;
-    }
-    
-    return res.status(200).json({
-      success: true,
-      appointment: data,
-      depositStatus: data.deposit_status,
-      paymentStatus: data.payment_status
-    });
-  } catch (e) {
-    console.error('Error in check-payment-status:', e);
-    return res.status(500).json({ 
-      success: false, 
-      error: e.message 
-    });
-  }
-});
-
-// Update payment status
-router.post('/update-payment-status', async (req, res) => {
-  const { appointmentId, depositStatus, paymentStatus, paymentMethod } = req.body;
-  
-  if (!appointmentId) {
-    return res.status(400).json({ 
-      success: false, 
-      error: 'Appointment ID is required' 
-    });
-  }
-  
-  try {
-    // Prepare update data
-    const updateData = { updated_at: new Date() };
-    
-    if (depositStatus) updateData.deposit_status = depositStatus;
-    if (paymentStatus) updateData.payment_status = paymentStatus;
-    if (paymentMethod) updateData.payment_method = paymentMethod;
-    
-    // Update appointment
-    const { data, error } = await supabase
-      .from('appointments')
-      .update(updateData)
-      .eq('id', appointmentId)
-      .select();
-    
-    if (error) {
-      throw error;
-    }
-    
-    return res.status(200).json({
-      success: true,
-      message: 'Payment status updated',
-      appointment: data[0]
-    });
-  } catch (e) {
-    console.error('Error in update-payment-status:', e);
-    return res.status(500).json({ 
-      success: false, 
-      error: e.message 
-    });
-  }
-});
-
-// 5. PORTFOLIO & SERVICES ENDPOINTS
-
 // Get services
 router.get('/get-services', async (req, res) => {
   try {
@@ -1701,303 +1568,6 @@ router.get('/get-services', async (req, res) => {
 });
 
 // Get portfolio examples
-router.get('/get-portfolio-examples', async (req, res) => {
-  const { serviceId, skinTone, limit = 5 } = req.query;
-  
-  try {
-    let query = supabase
-      .from('portfolio')
-      .select('*')
-      .order('created_at', { ascending: false });
-    
-    if (serviceId) {
-      query = query.eq('service_id', serviceId);
-    }
-    
-    if (skinTone) {
-      query = query.ilike('skin_tone', `%${skinTone}%`);
-    }
-    
-    const { data, error } = await query.limit(parseInt(limit));
-    
-    if (error) {
-      throw error;
-    }
-    
-    // Get service details for each portfolio item
-    for (const item of data) {
-      if (item.service_id) {
-        const { data: service } = await supabase
-          .from('services')
-          .select('name')
-          .eq('id', item.service_id)
-          .single();
-        
-        if (service) {
-          item.service_name = service.name;
-        }
-      }
-    }
-    
-    return res.status(200).json({
-      success: true,
-      portfolioItems: data,
-      count: data.length
-    });
-  } catch (e) {
-    console.error('Error in get-portfolio-examples:', e);
-    return res.status(500).json({ 
-      success: false, 
-      error: e.message 
-    });
-  }
-});
-
-// Get location fees
-router.get('/get-location-fees', async (req, res) => {
-  try {
-    const { data, error } = await supabase
-      .from('locations')
-      .select('*')
-      .order('travel_fee', { ascending: true });
-    
-    if (error) {
-      throw error;
-    }
-    
-    return res.status(200).json({
-      success: true,
-      locations: data,
-      count: data.length
-    });
-  } catch (e) {
-    console.error('Error in get-location-fees:', e);
-    return res.status(500).json({ 
-      success: false, 
-      error: e.message 
-    });
-  }
-});
-
-// 6. BOOKING PROCESS ENDPOINTS
-
-// Create booking form
-router.post('/create-booking-form', async (req, res) => {
-  const { clientPhone, appointmentId } = req.body;
-  
-  if (!clientPhone) {
-    return res.status(400).json({ 
-      success: false, 
-      error: 'Client phone is required' 
-    });
-  }
-  
-  try {
-    // For simplicity, we're just returning a mock form link
-    // In a real implementation, you'd generate a custom form link with prefilled data
-    
-    const formLink = appointmentId 
-      ? `https://example.com/booking-form?client=${clientPhone}&appointment=${appointmentId}`
-      : `https://example.com/booking-form?client=${clientPhone}`;
-    
-    return res.status(200).json({
-      success: true,
-      formLink,
-      message: 'Booking form link created'
-    });
-  } catch (e) {
-    console.error('Error in create-booking-form:', e);
-    return res.status(500).json({ 
-      success: false, 
-      error: e.message 
-    });
-  }
-});
-
-// Check form submission
-router.get('/check-form-submission', async (req, res) => {
-  const { clientPhone, appointmentId } = req.query;
-  
-  if (!clientPhone && !appointmentId) {
-    return res.status(400).json({ 
-      success: false, 
-      error: 'Client phone or appointment ID is required' 
-    });
-  }
-  
-  try {
-    // For simplicity, we're just returning a mock response
-    // In a real implementation, you'd check if the form has been submitted
-    
-    const isSubmitted = Math.random() > 0.5; // Random true/false for demo purposes
-    
-    return res.status(200).json({
-      success: true,
-      isSubmitted,
-      submissionDate: isSubmitted ? new Date().toISOString() : null,
-      message: isSubmitted ? 'Form has been submitted' : 'Form has not been submitted yet'
-    });
-  } catch (e) {
-    console.error('Error in check-form-submission:', e);
-    return res.status(500).json({ 
-      success: false, 
-      error: e.message 
-    });
-  }
-});
-
-// Lookup endpoints for services and locations
-
-// Lookup service ID by name
-router.get('/lookup-service-id', async (req, res) => {
-  const { serviceName } = req.query;
-  
-  if (!serviceName) {
-    return res.status(400).json({ 
-      success: false, 
-      error: 'Service name is required' 
-    });
-  }
-  
-  try {
-    // Search for service with similar name (case insensitive)
-    const { data, error } = await supabase
-      .from('services')
-      .select('id, name, base_price, duration_minutes')
-      .ilike('name', `%${serviceName}%`)
-      .order('base_price', { ascending: true })
-      .limit(1);
-    
-    if (error) {
-      throw error;
-    }
-    
-    if (!data || data.length === 0) {
-      return res.status(404).json({
-        success: false,
-        error: 'No service found with that name',
-        serviceName
-      });
-    }
-    
-    return res.status(200).json({
-      success: true,
-      service: data[0],
-      serviceId: data[0].id,
-      serviceName: data[0].name,
-      servicePrice: data[0].base_price,
-      serviceDuration: data[0].duration_minutes
-    });
-  } catch (e) {
-    console.error('Error in lookup-service-id:', e);
-    return res.status(500).json({ 
-      success: false, 
-      error: e.message 
-    });
-  }
-});
-
-// Lookup location ID by name
-router.get('/lookup-location-id', async (req, res) => {
-  const { locationName } = req.query;
-  
-  if (!locationName) {
-    return res.status(400).json({ 
-      success: false, 
-      error: 'Location name is required' 
-    });
-  }
-  
-  try {
-    // Search for location with similar name (case insensitive)
-    const { data, error } = await supabase
-      .from('locations')
-      .select('id, name, travel_fee, travel_time_minutes')
-      .ilike('name', `%${locationName}%`)
-      .order('travel_fee', { ascending: true })
-      .limit(1);
-    
-    if (error) {
-      throw error;
-    }
-    
-    if (!data || data.length === 0) {
-      return res.status(404).json({
-        success: false,
-        error: 'No location found with that name',
-        locationName
-      });
-    }
-    
-    return res.status(200).json({
-      success: true,
-      location: data[0],
-      locationId: data[0].id,
-      locationName: data[0].name,
-      travelFee: data[0].travel_fee,
-      travelTime: data[0].travel_time_minutes
-    });
-  } catch (e) {
-    console.error('Error in lookup-location-id:', e);
-    return res.status(500).json({ 
-      success: false, 
-      error: e.message 
-    });
-  }
-});
-
-router.post('/test-create-client', async (req, res) => {
-    const { phoneNumber, name = "Test Client" } = req.body;
-    
-    if (!phoneNumber) {
-      return res.status(400).json({ 
-        success: false, 
-        error: 'Phone number is required' 
-      });
-    }
-    
-    try {
-      // Format phone number
-      let formattedPhone = phoneNumber;
-      const digits = formattedPhone.replace(/\D/g, '');
-      if (!formattedPhone.startsWith('+')) {
-        formattedPhone = digits.length === 10 ? `+1${digits}` : `+${digits}`;
-      }
-      
-      // Try direct insertion
-      const { data, error } = await supabase
-        .from('clients')
-        .insert({
-          phone_number: formattedPhone,
-          name: name,
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString()
-        })
-        .select();
-      
-      if (error) {
-        console.error('Direct insert error:', error);
-        return res.status(500).json({ 
-          success: false, 
-          error: error.message,
-          details: "Database operation failed"
-        });
-      }
-      
-      return res.status(200).json({
-        success: true,
-        message: "Client created directly",
-        client: data[0],
-        isNew: true
-      });
-    } catch (e) {
-      console.error('Error in test-create-client:', e);
-      return res.status(500).json({ 
-        success: false, 
-        error: e.message 
-      });
-    }
-  });
 
   router.post('/store-conversation', async (req, res) => {
     const { 
@@ -2319,6 +1889,156 @@ router.post('/test-create-client', async (req, res) => {
       });
     } catch (e) {
       console.error('Error in get-client-status:', e);
+      return res.status(500).json({ 
+        success: false, 
+        error: e.message 
+      });
+    }
+  });
+
+  router.post('/confirm-pending-appointment', async (req, res) => {
+    const { 
+      appointmentId,
+      clientPhone,
+      clientName
+    } = req.body;
+    
+    if (!appointmentId && !clientPhone) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Appointment ID or client phone is required' 
+      });
+    }
+    
+    try {
+      // Get the pending appointment
+      let appointment;
+      
+      if (appointmentId) {
+        const { data, error } = await supabase
+          .from('appointments')
+          .select('*')
+          .eq('id', appointmentId)
+          .eq('status', 'pending_confirmation')
+          .single();
+          
+        if (error || !data) {
+          return res.status(404).json({ 
+            success: false, 
+            error: 'Pending appointment not found' 
+          });
+        }
+        appointment = data;
+      } else {
+        // Find by client phone
+        const { data, error } = await supabase
+          .from('appointments')
+          .select('*')
+          .eq('client_phone', clientPhone)
+          .eq('status', 'pending_confirmation')
+          .order('created_at', { ascending: false })
+          .limit(1);
+          
+        if (error || !data || data.length === 0) {
+          return res.status(404).json({ 
+            success: false, 
+            error: 'No pending appointments found for this client' 
+          });
+        }
+        appointment = data[0];
+      }
+      
+      // Get artist's Google Calendar credentials
+      const { data: artist, error: artistError } = await supabase
+        .from('makeup_artists')
+        .select('*')
+        .single();
+      
+      if (artistError || !artist?.refresh_token) {
+        return res.status(404).json({ 
+          success: false, 
+          error: 'Makeup artist not found or not authorized' 
+        });
+      }
+      
+      // Create Google Calendar client
+      const oauth2Client = createOAuth2Client(artist.refresh_token);
+      const calendar = google.calendar({ version: 'v3', auth: oauth2Client });
+      const calendarId = artist.selected_calendar_id || 'primary';
+      
+      // Create event description
+      let description = `Client: ${clientName || 'Client'}\nPhone: ${appointment.client_phone}\n`;
+      description += `Service: ${appointment.service_type || 'Makeup Service'}\n`;
+      description += `Location: ${appointment.location_description || 'Client Location'}`;
+      
+      if (appointment.specific_address) {
+        description += ` (${appointment.specific_address})`;
+      }
+      
+      if (appointment.notes) {
+        description += `\n\nNotes: ${appointment.notes}`;
+      }
+      
+      // Create Google Calendar event
+      const eventDetails = {
+        summary: `${appointment.service_type || 'Makeup Service'}: ${clientName || 'Client'}`,
+        description,
+        location: appointment.specific_address || appointment.location_description,
+        start: {
+          dateTime: appointment.start_time,
+          timeZone: 'America/Chicago'
+        },
+        end: {
+          dateTime: appointment.end_time,
+          timeZone: 'America/Chicago'
+        }
+      };
+      
+      const event = await calendar.events.insert({ 
+        calendarId, 
+        resource: eventDetails,
+        sendUpdates: 'all'
+      });
+      
+      // Update appointment status
+      const { data: updatedAppointment, error: updateError } = await supabase
+        .from('appointments')
+        .update({
+          status: 'confirmed',
+          artist_confirmation_status: 'confirmed',
+          google_calendar_event_id: event.data.id,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', appointment.id)
+        .select();
+      
+      if (updateError) {
+        console.error('Error updating appointment:', updateError);
+        return res.status(500).json({ 
+          success: false, 
+          error: 'Calendar event created but failed to update appointment' 
+        });
+      }
+      
+      // Update client status to Active
+      await supabase
+        .from('clients')
+        .update({ 
+          status: 'Active',
+          updated_at: new Date().toISOString()
+        })
+        .eq('phone_number', appointment.client_phone);
+      
+      return res.status(200).json({
+        success: true,
+        action: 'confirm',
+        eventId: event.data.id,
+        eventLink: event.data.htmlLink,
+        appointment: updatedAppointment[0],
+        message: 'Appointment confirmed and added to calendar'
+      });
+    } catch (e) {
+      console.error('Error in confirm-pending-appointment:', e);
       return res.status(500).json({ 
         success: false, 
         error: e.message 
