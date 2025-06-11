@@ -21,7 +21,6 @@ function parseCentralDateTime(dateTimeString) {
     return parseDateTime(dateTimeString, 'makeup_artist');
 }
 
-// 1. CLIENT MANAGEMENT ENDPOINTS
 
 // Get client information by phone number
 router.get('/get-client-info', async (req, res) => {
@@ -40,7 +39,7 @@ router.get('/get-client-info', async (req, res) => {
     let upcomingAppointment = null;
     const { data: appointments, error } = await supabase
       .from('appointments')
-      .select('id, start_time, service_id, location_id, google_calendar_event_id, status, deposit_status')
+      .select('id, start_time, service_type, location_description, google_calendar_event_id, status, deposit_status, duration_minutes')
       .eq('client_phone', formattedPhone)
       .gte('start_time', new Date().toISOString())
       .order('start_time', { ascending: true })
@@ -49,30 +48,21 @@ router.get('/get-client-info', async (req, res) => {
     if (appointments && appointments.length > 0) {
       upcomingAppointment = appointments[0];
       
-      // Get service details if available
-      if (upcomingAppointment.service_id) {
-        const { data: service } = await supabase
-          .from('services')
-          .select('name, base_price, duration_minutes')
-          .eq('id', upcomingAppointment.service_id)
-          .single();
-          
-        if (service) {
-          upcomingAppointment.service = service;
-        }
+      // Format service info from the text field
+      if (upcomingAppointment.service_type) {
+        upcomingAppointment.service = {
+          name: upcomingAppointment.service_type,
+          base_price: null, // You don't have this in your schema
+          duration_minutes: upcomingAppointment.duration_minutes || 60
+        };
       }
       
-      // Get location details if available
-      if (upcomingAppointment.location_id) {
-        const { data: location } = await supabase
-          .from('locations')
-          .select('name, travel_fee')
-          .eq('id', upcomingAppointment.location_id)
-          .single();
-          
-        if (location) {
-          upcomingAppointment.location = location;
-        }
+      // Format location info from the text field
+      if (upcomingAppointment.location_description) {
+        upcomingAppointment.location = {
+          name: upcomingAppointment.location_description,
+          travel_fee: null // You don't have this in your schema
+        };
       }
     }
 
@@ -89,12 +79,13 @@ router.get('/get-client-info', async (req, res) => {
         allergies: client.allergies,
         preferred_service_type: client.preferred_service_type,
         special_notes: client.special_notes,
-        status: client.status || 'Lead', // ADD THIS
-        status_notes: client.status_notes // ADD THIS
+        status: client.status || 'Lead',
+        status_notes: client.status_notes
       },
       upcomingAppointment
     });
   } catch (e) {
+    console.error('Error in get-client-info:', e);
     return res.status(500).json({ success: false, error: e.message });
   }
 });
@@ -1004,22 +995,26 @@ router.get('/get-pending-appointments', async (req, res) => {
       .from('appointments')
       .select(`
         *,
-        client:clients(name, phone_number),
-        service:services(name, base_price, duration_minutes),
-        location:locations(name, travel_fee)
+        client:clients!appointments_client_phone_fkey(name, phone_number, email, skin_type, skin_tone, allergies)
       `)
       .order('start_time', { ascending: true });
     
     // Filter by client phone if provided
     if (clientPhone) {
-      query = query.eq('client_phone', clientPhone);
+      // Format the phone number to match your database format
+      let formattedPhone = clientPhone;
+      const digits = formattedPhone.replace(/\D/g, '');
+      if (!formattedPhone.startsWith('+')) {
+        formattedPhone = digits.length === 10 ? `+1${digits}` : `+${digits}`;
+      }
+      query = query.eq('client_phone', formattedPhone);
     }
     
     // Filter by status
     if (includeCompleted === 'true' || includeCompleted === true) {
-      query = query.in('status', ['pending', 'confirmed', 'completed']);
+      query = query.in('status', ['pending_confirmation', 'pending', 'confirmed', 'completed']);
     } else {
-      query = query.in('status', ['pending', 'confirmed']);
+      query = query.in('status', ['pending_confirmation', 'pending', 'confirmed']);
     }
     
     // Only get future appointments
@@ -1028,25 +1023,37 @@ router.get('/get-pending-appointments', async (req, res) => {
     const { data, error } = await query;
     
     if (error) {
+      console.error('Error fetching pending appointments:', error);
       throw error;
     }
     
-    // For each appointment, get group bookings if any
-    for (const appointment of data) {
-      const { data: groupBookings, error: gbError } = await supabase
-        .from('group_bookings')
-        .select('*')
-        .eq('main_appointment_id', appointment.id);
+    // Process the data to add any additional group booking info if needed
+    const processedAppointments = [];
+    
+    for (const appointment of data || []) {
+      // Add group_bookings as an empty array since you don't have a separate table
+      // The group clients info is stored in the group_clients jsonb field
+      appointment.group_bookings = appointment.group_clients || [];
       
-      if (!gbError && groupBookings?.length > 0) {
-        appointment.group_bookings = groupBookings;
-      }
+      // Add service and location as null since they're stored as text fields
+      appointment.service = appointment.service_type ? {
+        name: appointment.service_type,
+        base_price: null,
+        duration_minutes: appointment.duration_minutes || 60
+      } : null;
+      
+      appointment.location = appointment.location_description ? {
+        name: appointment.location_description,
+        travel_fee: null
+      } : null;
+      
+      processedAppointments.push(appointment);
     }
     
     return res.status(200).json({
       success: true,
-      appointments: data,
-      count: data.length
+      appointments: processedAppointments,
+      count: processedAppointments.length
     });
   } catch (e) {
     console.error('Error in get-pending-appointments:', e);
