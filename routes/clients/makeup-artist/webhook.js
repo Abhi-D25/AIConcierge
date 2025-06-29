@@ -645,31 +645,55 @@ router.post('/client-appointment', async (req, res) => {
 });
 
 // Helper function to calculate end time
+// Helper function to calculate end time
 function calculateEndTime(startDateTimeStr, durationMinutes) {
   try {
+    console.log(`Calculating end time: start=${startDateTimeStr}, duration=${durationMinutes} minutes`);
+    
+    // Ensure duration is a number
+    const duration = typeof durationMinutes === 'string' ? parseInt(durationMinutes, 10) : durationMinutes;
+    
     // Parse the start time
     const startDate = new Date(startDateTimeStr);
+    console.log(`Parsed start date: ${startDate.toISOString()}`);
     
-    // Calculate end time by adding the duration
-    const endDate = new Date(startDate.getTime() + (durationMinutes * 60000));
+    // Calculate end time by adding the duration in milliseconds
+    const endDate = new Date(startDate.getTime() + (duration * 60 * 1000));
+    console.log(`Calculated end date: ${endDate.toISOString()}`);
     
-    // Format the end date in the same format as the start date
-    return endDate.toISOString().replace(/\.\d{3}Z$/, '');
+    // Return in the same format as input (without .000Z suffix for consistency)
+    const endDateTimeStr = endDate.toISOString().replace(/\.\d{3}Z$/, '');
+    console.log(`Final end time string: ${endDateTimeStr}`);
+    
+    return endDateTimeStr;
   } catch (err) {
     console.error('Error calculating end time:', err);
+    console.error('Input values:', { startDateTimeStr, durationMinutes });
     
-    // Fallback: add hours and minutes directly to the string
-    const [datePart, timePart] = startDateTimeStr.split('T');
-    const [hoursStr, minutesStr] = timePart.split(':');
-    
-    const hours = parseInt(hoursStr);
-    const minutes = parseInt(minutesStr);
-    
-    const totalMinutes = hours * 60 + minutes + durationMinutes;
-    const newHours = Math.floor(totalMinutes / 60);
-    const newMinutes = totalMinutes % 60;
-    
-    return `${datePart}T${String(newHours).padStart(2, '0')}:${String(newMinutes).padStart(2, '0')}:00`;
+    // Fallback: try manual calculation
+    try {
+      const [datePart, timePart] = startDateTimeStr.split('T');
+      const timeWithoutTZ = timePart.replace(/[+\-].*$/, '').replace('Z', '');
+      const [hoursStr, minutesStr, secondsStr] = timeWithoutTZ.split(':');
+      
+      const hours = parseInt(hoursStr, 10);
+      const minutes = parseInt(minutesStr, 10);
+      const seconds = parseInt(secondsStr || '0', 10);
+      
+      const duration = typeof durationMinutes === 'string' ? parseInt(durationMinutes, 10) : durationMinutes;
+      const totalMinutes = hours * 60 + minutes + duration;
+      const newHours = Math.floor(totalMinutes / 60);
+      const newMinutes = totalMinutes % 60;
+      
+      return `${datePart}T${String(newHours).padStart(2, '0')}:${String(newMinutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+    } catch (fallbackErr) {
+      console.error('Fallback calculation also failed:', fallbackErr);
+      // Last resort: return start time + 1 hour
+      return startDateTimeStr.replace(/T(\d{2}):(\d{2})/, (match, h, m) => {
+        const newHour = (parseInt(h, 10) + 1) % 24;
+        return `T${String(newHour).padStart(2, '0')}:${m}`;
+      });
+    }
   }
 }
 
