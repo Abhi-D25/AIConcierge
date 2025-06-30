@@ -549,8 +549,17 @@ router.post('/client-appointment', async (req, res) => {
         if (!finalEndDateTime) {
           finalEndDateTime = calculateEndTime(startDateTime, duration);
         }
-        
-        console.log(`Appointment times: ${startDateTime} to ${finalEndDateTime} (duration: ${duration} minutes)`);
+
+        console.log(`Appointment times for Google Calendar:`);
+        console.log(`Start: ${startDateTime}`);
+        console.log(`End: ${finalEndDateTime}`);
+        console.log(`Duration: ${duration} minutes`);
+
+        // Log the actual times that will be sent to Google Calendar
+        const startInCentral = new Date(startDateTime).toLocaleString('en-US', {timeZone: 'America/Chicago'});
+        const endInCentral = new Date(finalEndDateTime).toLocaleString('en-US', {timeZone: 'America/Chicago'});
+        console.log(`Google Calendar will show: ${startInCentral} to ${endInCentral}`);
+
         console.log(`Is confirmation: ${isConfirmation}`);
         
         // Format service type for calendar title
@@ -583,17 +592,16 @@ router.post('/client-appointment', async (req, res) => {
         }
         
         try {
-          // Create Google Calendar event
           const eventDetails = {
             summary: `${formattedServiceType}: ${clientName}`,
             description,
             location: specificAddress || location || 'Client Location',
             start: {
-              dateTime: startDateTime,
+              dateTime: startDateTime,  // Keep original format
               timeZone: 'America/Chicago'
             },
             end: {
-              dateTime: finalEndDateTime,
+              dateTime: finalEndDateTime,  // Use calculated end time
               timeZone: 'America/Chicago'
             }
           };
