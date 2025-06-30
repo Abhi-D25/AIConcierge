@@ -720,8 +720,6 @@ router.post('/client-appointment', async (req, res) => {
     }
 });
 
-// Helper function to calculate end time
-// Helper function to calculate end time
 function calculateEndTime(startDateTimeStr, durationMinutes) {
   try {
     console.log(`Calculating end time: start=${startDateTimeStr}, duration=${durationMinutes} minutes`);
@@ -732,13 +730,15 @@ function calculateEndTime(startDateTimeStr, durationMinutes) {
     // Parse the start time
     const startDate = new Date(startDateTimeStr);
     console.log(`Parsed start date: ${startDate.toISOString()}`);
+    console.log(`Start date in Central Time: ${startDate.toLocaleString('en-US', {timeZone: 'America/Chicago'})}`);
     
     // Calculate end time by adding the duration in milliseconds
     const endDate = new Date(startDate.getTime() + (duration * 60 * 1000));
     console.log(`Calculated end date: ${endDate.toISOString()}`);
+    console.log(`End date in Central Time: ${endDate.toLocaleString('en-US', {timeZone: 'America/Chicago'})}`);
     
-    // Return in the same format as input (without .000Z suffix for consistency)
-    const endDateTimeStr = endDate.toISOString().replace(/\.\d{3}Z$/, '');
+    // Return in ISO format
+    const endDateTimeStr = endDate.toISOString();
     console.log(`Final end time string: ${endDateTimeStr}`);
     
     return endDateTimeStr;
@@ -761,47 +761,16 @@ function calculateEndTime(startDateTimeStr, durationMinutes) {
       const newHours = Math.floor(totalMinutes / 60);
       const newMinutes = totalMinutes % 60;
       
-      return `${datePart}T${String(newHours).padStart(2, '0')}:${String(newMinutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+      return `${datePart}T${String(newHours).padStart(2, '0')}:${String(newMinutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}Z`;
     } catch (fallbackErr) {
       console.error('Fallback calculation also failed:', fallbackErr);
       // Last resort: return start time + 1 hour
-      return startDateTimeStr.replace(/T(\d{2}):(\d{2})/, (match, h, m) => {
-        const newHour = (parseInt(h, 10) + 1) % 24;
-        return `T${String(newHour).padStart(2, '0')}:${m}`;
-      });
+      const fallbackDate = new Date(startDateTimeStr);
+      fallbackDate.setHours(fallbackDate.getHours() + 1);
+      return fallbackDate.toISOString();
     }
   }
 }
-
-// Helper function to calculate end time
-function calculateEndTime(startDateTimeStr, durationMinutes) {
-  try {
-    // Parse the start time
-    const startDate = new Date(startDateTimeStr);
-    
-    // Calculate end time by adding the duration
-    const endDate = new Date(startDate.getTime() + (durationMinutes * 60000));
-    
-    // Format the end date in the same format as the start date
-    return endDate.toISOString().replace(/\.\d{3}Z$/, '');
-  } catch (err) {
-    console.error('Error calculating end time:', err);
-    
-    // Fallback: add hours and minutes directly to the string
-    const [datePart, timePart] = startDateTimeStr.split('T');
-    const [hoursStr, minutesStr] = timePart.split(':');
-    
-    const hours = parseInt(hoursStr);
-    const minutes = parseInt(minutesStr);
-    
-    const totalMinutes = hours * 60 + minutes + durationMinutes;
-    const newHours = Math.floor(totalMinutes / 60);
-    const newMinutes = totalMinutes % 60;
-    
-    return `${datePart}T${String(newHours).padStart(2, '0')}:${String(newMinutes).padStart(2, '0')}:00`;
-  }
-}
-
 
   router.post('/update-client-info', async (req, res) => {
     const { 
