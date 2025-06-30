@@ -592,16 +592,36 @@ router.post('/client-appointment', async (req, res) => {
         }
         
         try {
+          // Format times for Google Calendar
+          const formattedStartDateTime = formatDateTimeForGoogleCalendar(startDateTime);
+          const formattedEndDateTime = calculateEndTime(startDateTime, duration);
+          
+          console.log(`Google Calendar formatted times:`);
+          console.log(`Start: ${formattedStartDateTime}`);
+          console.log(`End: ${formattedEndDateTime}`);
+          
+          // Verify the time range is valid
+          const startTime = new Date(formattedStartDateTime);
+          const endTime = new Date(formattedEndDateTime);
+          
+          if (endTime <= startTime) {
+            throw new Error(`Invalid time range: end time (${formattedEndDateTime}) must be after start time (${formattedStartDateTime})`);
+          }
+          
+          const durationCheck = Math.round((endTime - startTime) / (1000 * 60));
+          console.log(`Calculated duration: ${durationCheck} minutes (expected: ${duration} minutes)`);
+          
+          // Create Google Calendar event
           const eventDetails = {
             summary: `${formattedServiceType}: ${clientName}`,
             description,
             location: specificAddress || location || 'Client Location',
             start: {
-              dateTime: startDateTime,  // Keep original format
+              dateTime: formattedStartDateTime,
               timeZone: 'America/Chicago'
             },
             end: {
-              dateTime: finalEndDateTime,  // Use calculated end time
+              dateTime: formattedEndDateTime,
               timeZone: 'America/Chicago'
             }
           };
@@ -735,8 +755,18 @@ function calculateEndTime(startDateTimeStr, durationMinutes) {
     // Ensure duration is a number
     const duration = typeof durationMinutes === 'string' ? parseInt(durationMinutes, 10) : durationMinutes;
     
-    // Parse the start time
-    const startDate = new Date(startDateTimeStr);
+    // Handle different input formats and ensure proper timezone handling
+    let startDate;
+    
+    if (startDateTimeStr.includes('T') && !startDateTimeStr.includes('Z') && !startDateTimeStr.includes('+') && !startDateTimeStr.includes('-', 10)) {
+      // Format like "2025-07-28T16:00:00" - assume Central Time
+      console.log('Input appears to be local time (Central), converting for Google Calendar...');
+      startDate = new Date(startDateTimeStr);
+    } else {
+      // Format with timezone info
+      startDate = new Date(startDateTimeStr);
+    }
+    
     console.log(`Parsed start date: ${startDate.toISOString()}`);
     console.log(`Start date in Central Time: ${startDate.toLocaleString('en-US', {timeZone: 'America/Chicago'})}`);
     
@@ -745,40 +775,44 @@ function calculateEndTime(startDateTimeStr, durationMinutes) {
     console.log(`Calculated end date: ${endDate.toISOString()}`);
     console.log(`End date in Central Time: ${endDate.toLocaleString('en-US', {timeZone: 'America/Chicago'})}`);
     
-    // Return in ISO format
-    const endDateTimeStr = endDate.toISOString();
-    console.log(`Final end time string: ${endDateTimeStr}`);
-    
-    return endDateTimeStr;
+    // Return in ISO format for Google Calendar
+    return endDate.toISOString();
   } catch (err) {
     console.error('Error calculating end time:', err);
-    console.error('Input values:', { startDateTimeStr, durationMinutes });
-    
-    // Fallback: try manual calculation
-    try {
-      const [datePart, timePart] = startDateTimeStr.split('T');
-      const timeWithoutTZ = timePart.replace(/[+\-].*$/, '').replace('Z', '');
-      const [hoursStr, minutesStr, secondsStr] = timeWithoutTZ.split(':');
-      
-      const hours = parseInt(hoursStr, 10);
-      const minutes = parseInt(minutesStr, 10);
-      const seconds = parseInt(secondsStr || '0', 10);
-      
-      const duration = typeof durationMinutes === 'string' ? parseInt(durationMinutes, 10) : durationMinutes;
-      const totalMinutes = hours * 60 + minutes + duration;
-      const newHours = Math.floor(totalMinutes / 60);
-      const newMinutes = totalMinutes % 60;
-      
-      return `${datePart}T${String(newHours).padStart(2, '0')}:${String(newMinutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}Z`;
-    } catch (fallbackErr) {
-      console.error('Fallback calculation also failed:', fallbackErr);
-      // Last resort: return start time + 1 hour
-      const fallbackDate = new Date(startDateTimeStr);
-      fallbackDate.setHours(fallbackDate.getHours() + 1);
-      return fallbackDate.toISOString();
-    }
+    throw new Error(`Failed to calculate end time: ${err.message}`);
   }
 }
+
+function formatDateTimeForGoogleCalendar(dateTimeStr) {
+  try {
+    // If the input doesn't have timezone info, treat it as Central Time
+    if (dateTimeStr.includes('T') && !dateTimeStr.includes('Z') && !dateTimeStr.includes('+') && !dateTimeStr.includes('-', 10)) {
+      console.log(`Formatting ${dateTimeStr} as Central Time for Google Calendar`);
+      
+      // Parse as local time and then format for Google Calendar
+      const date = new Date(dateTimeStr);
+      
+      // Check if the date is valid
+      if (isNaN(date.getTime())) {
+        throw new Error(`Invalid date: ${dateTimeStr}`);
+      }
+      
+      return date.toISOString();
+    }
+    
+    // If it already has timezone info, use it as-is
+    const date = new Date(dateTimeStr);
+    if (isNaN(date.getTime())) {
+      throw new Error(`Invalid date: ${dateTimeStr}`);
+    }
+    
+    return date.toISOString();
+  } catch (err) {
+    console.error('Error formatting datetime for Google Calendar:', err);
+    throw err;
+  }
+}
+
 
   router.post('/update-client-info', async (req, res) => {
     const { 
