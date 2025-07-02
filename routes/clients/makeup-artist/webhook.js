@@ -1894,8 +1894,8 @@ router.get('/get-services', async (req, res) => {
         service_type: serviceType,
         location_description: location,
         specific_address: specificAddress,
-        start_time: formatTimeForDatabase(startDateTime),  // Include timezone info
-        end_time: formatTimeForDatabase(endDateTime),      // Include timezone info
+        start_time: `${startDateTime} America/Chicago`,
+        end_time: `${endDateTime} America/Chicago`,
         duration_minutes: duration,
         status: 'pending_confirmation',
         notes: notes,
