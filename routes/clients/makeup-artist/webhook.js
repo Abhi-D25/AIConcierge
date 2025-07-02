@@ -1838,8 +1838,7 @@ router.get('/get-services', async (req, res) => {
       notes = '', 
       skinType,
       skinTone,
-      allergies,
-      eventType = 'general'
+      allergies
     } = req.body;
     
     if (!clientPhone || !startDateTime) {
@@ -1887,23 +1886,18 @@ router.get('/get-services', async (req, res) => {
       }
       
       // Calculate end time
-      const startDate = new Date(startDateTime);
-      const endDate = new Date(startDate.getTime() + (duration * 60000));
-      const endDateTime = endDate.toISOString().replace(/\.\d{3}Z$/, '');
+      const endDateTime = calculateEndTime(startDateTime, duration);
       
-      // Create pending appointment record
+      // Create pending appointment record - UPDATED FOR NEW SCHEMA
       const appointmentData = {
         client_phone: formattedPhone,
         service_type: serviceType,
-        event_type: eventType,
         location_description: location,
         specific_address: specificAddress,
-        start_time: startDateTime,
-        end_time: endDateTime,
+        start_time: formatTimeForDatabase(startDateTime),  // Include timezone info
+        end_time: formatTimeForDatabase(endDateTime),      // Include timezone info
         duration_minutes: duration,
         status: 'pending_confirmation',
-        artist_confirmation_status: 'pending',
-        form_submission_status: 'pending',
         notes: notes,
         google_calendar_event_id: null
       };
@@ -1931,7 +1925,7 @@ router.get('/get-services', async (req, res) => {
         appointmentId: appointment[0].id,
         appointment: appointment[0],
         client: client,
-        message: 'Pending appointment stored successfully. Awaiting artist confirmation.'
+        message: 'Pending appointment stored successfully. Awaiting confirmation.'
       });
     } catch (e) {
       console.error('Error in store-pending-appointment:', e);
