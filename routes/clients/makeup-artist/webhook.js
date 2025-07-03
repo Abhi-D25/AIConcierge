@@ -21,41 +21,36 @@ function parseCentralDateTime(dateTimeString) {
     return parseDateTime(dateTimeString, 'makeup_artist');
 }
 
-// Helper function to convert Central Time to UTC for database storage
+// Helper function to convert Central Time to Central Time format for database storage
 function convertCTtoUTC(centralTimeString) {
-  // Create a date object and treat it as Central Time
+  // Since we want to store in Central Time format, just return the input
+  // but ensure it's in the correct format
   const dateCT = new Date(centralTimeString);
   
-  // Get the timezone offset for Central Time (America/Chicago)
-  // This is a simplified approach - in production you might want to use a library like luxon
-  const centralOffset = -6; // CST is UTC-6, CDT is UTC-5
-  const isDST = isDaylightSavingTime(dateCT);
-  const actualOffset = isDST ? -5 : -6;
+  // Format as YYYY-MM-DDTHH:MM:SS
+  const year = dateCT.getFullYear();
+  const month = String(dateCT.getMonth() + 1).padStart(2, '0');
+  const day = String(dateCT.getDate()).padStart(2, '0');
+  const hours = String(dateCT.getHours()).padStart(2, '0');
+  const minutes = String(dateCT.getMinutes()).padStart(2, '0');
+  const seconds = String(dateCT.getSeconds()).padStart(2, '0');
   
-  // Adjust the time by the Central Time offset to get UTC
-  const utcDate = new Date(dateCT.getTime() + (actualOffset * 60 * 60 * 1000));
-  return utcDate.toISOString();
+  return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}`;
 }
 
-// Helper function to convert UTC to Central Time for display
-function convertUTCtoCT(utcTimeString) {
-  const dateUTC = new Date(utcTimeString);
-  
-  // Get the timezone offset for Central Time
-  const centralOffset = -6; // CST is UTC-6, CDT is UTC-5
-  const isDST = isDaylightSavingTime(dateUTC);
-  const actualOffset = isDST ? -5 : -6;
-  
-  // Adjust the time by the Central Time offset
-  const ctDate = new Date(dateUTC.getTime() - (actualOffset * 60 * 60 * 1000));
+// Helper function to convert database time to Central Time for display
+function convertUTCtoCT(databaseTimeString) {
+  // Since we're storing in Central Time format, just return the input
+  // but ensure it's in the correct format
+  const date = new Date(databaseTimeString);
   
   // Format as YYYY-MM-DDTHH:MM:SS
-  const year = ctDate.getFullYear();
-  const month = String(ctDate.getMonth() + 1).padStart(2, '0');
-  const day = String(ctDate.getDate()).padStart(2, '0');
-  const hours = String(ctDate.getHours()).padStart(2, '0');
-  const minutes = String(ctDate.getMinutes()).padStart(2, '0');
-  const seconds = String(ctDate.getSeconds()).padStart(2, '0');
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  const hours = String(date.getHours()).padStart(2, '0');
+  const minutes = String(date.getMinutes()).padStart(2, '0');
+  const seconds = String(date.getSeconds()).padStart(2, '0');
   
   return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}`;
 }
@@ -121,7 +116,7 @@ router.get('/get-client-info', async (req, res) => {
     if (appointments && appointments.length > 0) {
       upcomingAppointment = appointments[0];
       
-      // Convert UTC times from database back to Central Time for display
+      // Format times from database (stored in Central Time format)
       if (upcomingAppointment.start_time) {
         upcomingAppointment.start_time_ct = convertUTCtoCT(upcomingAppointment.start_time);
       }
@@ -540,11 +535,11 @@ router.post('/confirm-appointment', async (req, res) => {
     
     if (isConfirmation) {
       const existingAppointment = existingAppointments[0];
-      // Convert UTC time from database back to Central Time for Google Calendar
+      // Use the Central Time from database directly for Google Calendar
       appointmentStartTime = convertUTCtoCT(existingAppointment.start_time);
       appointmentEndTime = convertUTCtoCT(existingAppointment.end_time);
       
-      console.log(`Using existing appointment times:`);
+      console.log(`Using existing appointment times from database:`);
       console.log(`Start (CT): ${appointmentStartTime}`);
       console.log(`End (CT): ${appointmentEndTime}`);
     } else {
@@ -658,17 +653,17 @@ router.post('/confirm-appointment', async (req, res) => {
           }
         });
       } else {
-        // CREATE new appointment record with proper UTC conversion
-        const startUTC = convertCTtoUTC(appointmentStartTime);
-        const endUTC = convertCTtoUTC(appointmentEndTime);
+        // CREATE new appointment record with Central Time format
+        const startTimeForDB = convertCTtoUTC(appointmentStartTime);
+        const endTimeForDB = convertCTtoUTC(appointmentEndTime);
         
         const appointmentData = {
           client_phone: clientPhone,
           service_type: serviceType || 'makeup_service',
           location_description: location || 'Client Location',
           specific_address: specificAddress,
-          start_time: startUTC,
-          end_time: endUTC,
+          start_time: startTimeForDB,
+          end_time: endTimeForDB,
           google_calendar_event_id: event.data.id,
           status: 'confirmed',
           duration_minutes: duration,
@@ -921,18 +916,18 @@ router.post('/reschedule-appointment', async (req, res) => {
       
       console.log('Google Calendar event updated successfully');
       
-      // Convert Central Time to UTC for database storage
-      const startUTC = convertCTtoUTC(newStartDateTime);
-      const endUTC = convertCTtoUTC(newEndDateTime);
+      // Store times in Central Time format for database
+      const startTimeForDB = convertCTtoUTC(newStartDateTime);
+      const endTimeForDB = convertCTtoUTC(newEndDateTime);
       
-      console.log(`Time conversion for database:`);
-      console.log(`Start (CT): ${newStartDateTime} -> UTC: ${startUTC}`);
-      console.log(`End (CT): ${newEndDateTime} -> UTC: ${endUTC}`);
+      console.log(`Time storage for database:`);
+      console.log(`Start (CT): ${newStartDateTime} -> DB: ${startTimeForDB}`);
+      console.log(`End (CT): ${newEndDateTime} -> DB: ${endTimeForDB}`);
       
       // Update the appointment in the database
       const updateData = {
-        start_time: startUTC,
-        end_time: endUTC,
+        start_time: startTimeForDB,
+        end_time: endTimeForDB,
         updated_at: new Date().toISOString()
       };
       
@@ -1342,7 +1337,7 @@ router.get('/get-pending-appointments', async (req, res) => {
     const processedAppointments = [];
     
     for (const appointment of data || []) {
-      // Convert UTC times from database back to Central Time for display
+      // Format times from database (stored in Central Time format)
       if (appointment.start_time) {
         appointment.start_time_ct = convertUTCtoCT(appointment.start_time);
       }
@@ -2020,25 +2015,25 @@ router.get('/get-services', async (req, res) => {
       // Calculate end time in Central Time
       const endDateTime = calculateEndTime(startDateTime, duration);
       
-      // Convert Central Time to UTC for database storage
-      // Input format: "2025-07-17T14:00:00" (assumed to be Central Time)
-      const startUTC = convertCTtoUTC(startDateTime);
-      const endUTC = convertCTtoUTC(endDateTime);
+      // Store times in Central Time format for database
+      // Input format: "2025-07-17T14:00:00" (Central Time)
+      const startTimeForDB = convertCTtoUTC(startDateTime);
+      const endTimeForDB = convertCTtoUTC(endDateTime);
       
-      console.log(`Time conversion debug:`);
+      console.log(`Time storage debug:`);
       console.log(`Input startDateTime (CT): ${startDateTime}`);
       console.log(`Calculated endDateTime (CT): ${endDateTime}`);
-      console.log(`Storing start_time (UTC): ${startUTC}`);
-      console.log(`Storing end_time (UTC): ${endUTC}`);
+      console.log(`Storing start_time (CT): ${startTimeForDB}`);
+      console.log(`Storing end_time (CT): ${endTimeForDB}`);
       
-      // Create pending appointment record with UTC times
+      // Create pending appointment record with Central Time format
       const appointmentData = {
         client_phone: formattedPhone,
         service_type: serviceType,
         location_description: location,
         specific_address: specificAddress,
-        start_time: startUTC,
-        end_time: endUTC,
+        start_time: startTimeForDB,
+        end_time: endTimeForDB,
         duration_minutes: duration,
         status: 'pending_confirmation',
         notes: notes,
