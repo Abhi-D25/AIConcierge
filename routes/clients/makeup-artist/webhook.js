@@ -21,6 +21,79 @@ function parseCentralDateTime(dateTimeString) {
     return parseDateTime(dateTimeString, 'makeup_artist');
 }
 
+// Helper function to convert Central Time to UTC for database storage
+function convertCTtoUTC(centralTimeString) {
+  // Create a date object and treat it as Central Time
+  const dateCT = new Date(centralTimeString);
+  
+  // Get the timezone offset for Central Time (America/Chicago)
+  // This is a simplified approach - in production you might want to use a library like luxon
+  const centralOffset = -6; // CST is UTC-6, CDT is UTC-5
+  const isDST = isDaylightSavingTime(dateCT);
+  const actualOffset = isDST ? -5 : -6;
+  
+  // Adjust the time by the Central Time offset to get UTC
+  const utcDate = new Date(dateCT.getTime() + (actualOffset * 60 * 60 * 1000));
+  return utcDate.toISOString();
+}
+
+// Helper function to convert UTC to Central Time for display
+function convertUTCtoCT(utcTimeString) {
+  const dateUTC = new Date(utcTimeString);
+  
+  // Get the timezone offset for Central Time
+  const centralOffset = -6; // CST is UTC-6, CDT is UTC-5
+  const isDST = isDaylightSavingTime(dateUTC);
+  const actualOffset = isDST ? -5 : -6;
+  
+  // Adjust the time by the Central Time offset
+  const ctDate = new Date(dateUTC.getTime() - (actualOffset * 60 * 60 * 1000));
+  
+  // Format as YYYY-MM-DDTHH:MM:SS
+  const year = ctDate.getFullYear();
+  const month = String(ctDate.getMonth() + 1).padStart(2, '0');
+  const day = String(ctDate.getDate()).padStart(2, '0');
+  const hours = String(ctDate.getHours()).padStart(2, '0');
+  const minutes = String(ctDate.getMinutes()).padStart(2, '0');
+  const seconds = String(ctDate.getSeconds()).padStart(2, '0');
+  
+  return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}`;
+}
+
+// Helper function to determine if a date is in Daylight Saving Time for Central Time
+function isDaylightSavingTime(date) {
+  // Simplified DST calculation for Central Time
+  // DST starts: Second Sunday in March
+  // DST ends: First Sunday in November
+  
+  const year = date.getFullYear();
+  const month = date.getMonth() + 1; // getMonth() returns 0-11
+  const day = date.getDate();
+  
+  if (month < 3 || month > 11) {
+    return false; // Winter months
+  }
+  
+  if (month > 3 && month < 11) {
+    return true; // Summer months
+  }
+  
+  // March: DST starts on second Sunday
+  if (month === 3) {
+    const firstDayOfMarch = new Date(year, 2, 1).getDay(); // 0 = Sunday
+    const secondSunday = 14 - ((firstDayOfMarch + 6) % 7);
+    return day >= secondSunday;
+  }
+  
+  // November: DST ends on first Sunday
+  if (month === 11) {
+    const firstDayOfNovember = new Date(year, 10, 1).getDay(); // 0 = Sunday
+    const firstSunday = 7 - ((firstDayOfNovember + 6) % 7);
+    return day < firstSunday;
+  }
+  
+  return false;
+}
 
 // Get client information by phone number
 router.get('/get-client-info', async (req, res) => {
@@ -47,6 +120,11 @@ router.get('/get-client-info', async (req, res) => {
 
     if (appointments && appointments.length > 0) {
       upcomingAppointment = appointments[0];
+      
+      // Convert UTC times from database back to Central Time for display
+      if (upcomingAppointment.start_time) {
+        upcomingAppointment.start_time_ct = convertUTCtoCT(upcomingAppointment.start_time);
+      }
       
       // Format service info from the text field
       if (upcomingAppointment.service_type) {
@@ -457,12 +535,27 @@ router.post('/confirm-appointment', async (req, res) => {
     
     const isConfirmation = existingAppointments && existingAppointments.length > 0;
     
-    // Calculate end time
-    const endDateTime = calculateEndTime(startDateTime, duration);
+    // If confirming an existing appointment, use the time from the database
+    let appointmentStartTime, appointmentEndTime;
+    
+    if (isConfirmation) {
+      const existingAppointment = existingAppointments[0];
+      // Convert UTC time from database back to Central Time for Google Calendar
+      appointmentStartTime = convertUTCtoCT(existingAppointment.start_time);
+      appointmentEndTime = convertUTCtoCT(existingAppointment.end_time);
+      
+      console.log(`Using existing appointment times:`);
+      console.log(`Start (CT): ${appointmentStartTime}`);
+      console.log(`End (CT): ${appointmentEndTime}`);
+    } else {
+      // For new appointments, calculate end time
+      appointmentStartTime = startDateTime;
+      appointmentEndTime = calculateEndTime(startDateTime, duration);
+    }
     
     console.log(`Appointment times for Google Calendar:`);
-    console.log(`Start: ${startDateTime} (Central Time)`);
-    console.log(`End: ${endDateTime} (Central Time)`);
+    console.log(`Start: ${appointmentStartTime} (Central Time)`);
+    console.log(`End: ${appointmentEndTime} (Central Time)`);
     
     // Format service type for calendar title
     const formattedServiceType = formatServiceType(serviceType || 'Makeup Service');
@@ -492,11 +585,11 @@ router.post('/confirm-appointment', async (req, res) => {
         description,
         location: specificAddress || location || 'Client Location',
         start: {
-          dateTime: startDateTime,  // Use original format: "2025-07-28T16:00:00"
+          dateTime: appointmentStartTime,  // Use the correct time (existing or new)
           timeZone: 'America/Chicago'  // Explicitly specify Central Time
         },
         end: {
-          dateTime: endDateTime,   // Calculated end time in same format
+          dateTime: appointmentEndTime,   // Use the correct time (existing or new)
           timeZone: 'America/Chicago'  // Explicitly specify Central Time
         }
       };
@@ -556,17 +649,26 @@ router.post('/confirm-appointment', async (req, res) => {
           eventId: event.data.id,
           eventLink: event.data.htmlLink,
           appointment: updatedAppointment[0],
-          message: 'Appointment confirmed and added to calendar'
+          message: 'Appointment confirmed and added to calendar',
+          // Return times in Central Time for user display
+          appointmentTime: {
+            start: appointmentStartTime,
+            end: appointmentEndTime,
+            timezone: 'America/Chicago'
+          }
         });
       } else {
-        // CREATE new appointment record
+        // CREATE new appointment record with proper UTC conversion
+        const startUTC = convertCTtoUTC(appointmentStartTime);
+        const endUTC = convertCTtoUTC(appointmentEndTime);
+        
         const appointmentData = {
           client_phone: clientPhone,
           service_type: serviceType || 'makeup_service',
           location_description: location || 'Client Location',
           specific_address: specificAddress,
-          start_time: formatTimeForDatabase(startDateTime),  // Include timezone info
-          end_time: formatTimeForDatabase(endDateTime),      // Include timezone info
+          start_time: startUTC,
+          end_time: endUTC,
           google_calendar_event_id: event.data.id,
           status: 'confirmed',
           duration_minutes: duration,
@@ -600,7 +702,13 @@ router.post('/confirm-appointment', async (req, res) => {
           eventId: event.data.id,
           eventLink: event.data.htmlLink,
           appointment: appointment[0],
-          message: 'Appointment successfully created and confirmed'
+          message: 'Appointment successfully created and confirmed',
+          // Return times in Central Time for user display
+          appointmentTime: {
+            start: appointmentStartTime,
+            end: appointmentEndTime,
+            timezone: 'America/Chicago'
+          }
         });
       }
     } catch (calendarError) {
@@ -813,10 +921,18 @@ router.post('/reschedule-appointment', async (req, res) => {
       
       console.log('Google Calendar event updated successfully');
       
+      // Convert Central Time to UTC for database storage
+      const startUTC = convertCTtoUTC(newStartDateTime);
+      const endUTC = convertCTtoUTC(newEndDateTime);
+      
+      console.log(`Time conversion for database:`);
+      console.log(`Start (CT): ${newStartDateTime} -> UTC: ${startUTC}`);
+      console.log(`End (CT): ${newEndDateTime} -> UTC: ${endUTC}`);
+      
       // Update the appointment in the database
       const updateData = {
-        start_time: formatTimeForDatabase(newStartDateTime),  // Include timezone info
-        end_time: formatTimeForDatabase(newEndDateTime),      // Include timezone info
+        start_time: startUTC,
+        end_time: endUTC,
         updated_at: new Date().toISOString()
       };
       
@@ -847,7 +963,13 @@ router.post('/reschedule-appointment', async (req, res) => {
         appointment: data[0],
         newStartTime: newStartDateTime,
         newEndTime: newEndDateTime,
-        message: 'Appointment successfully rescheduled'
+        message: 'Appointment successfully rescheduled',
+        // Return times in Central Time for user display
+        appointmentTime: {
+          start: newStartDateTime,
+          end: newEndDateTime,
+          timezone: 'America/Chicago'
+        }
       });
     } catch (calendarError) {
       console.error('Google Calendar error:', calendarError);
@@ -1220,6 +1342,15 @@ router.get('/get-pending-appointments', async (req, res) => {
     const processedAppointments = [];
     
     for (const appointment of data || []) {
+      // Convert UTC times from database back to Central Time for display
+      if (appointment.start_time) {
+        appointment.start_time_ct = convertUTCtoCT(appointment.start_time);
+      }
+      
+      if (appointment.end_time) {
+        appointment.end_time_ct = convertUTCtoCT(appointment.end_time);
+      }
+      
       // Add group_bookings as an empty array since you don't have a separate table
       // The group clients info is stored in the group_clients jsonb field
       appointment.group_bookings = appointment.group_clients || [];
@@ -1242,7 +1373,8 @@ router.get('/get-pending-appointments', async (req, res) => {
     return res.status(200).json({
       success: true,
       appointments: processedAppointments,
-      count: processedAppointments.length
+      count: processedAppointments.length,
+      timezone: 'America/Chicago' // Indicate that CT times are provided
     });
   } catch (e) {
     console.error('Error in get-pending-appointments:', e);
@@ -1885,17 +2017,28 @@ router.get('/get-services', async (req, res) => {
         }
       }
       
-      // Calculate end time
+      // Calculate end time in Central Time
       const endDateTime = calculateEndTime(startDateTime, duration);
       
-      // Create pending appointment record - UPDATED FOR NEW SCHEMA
+      // Convert Central Time to UTC for database storage
+      // Input format: "2025-07-17T14:00:00" (assumed to be Central Time)
+      const startUTC = convertCTtoUTC(startDateTime);
+      const endUTC = convertCTtoUTC(endDateTime);
+      
+      console.log(`Time conversion debug:`);
+      console.log(`Input startDateTime (CT): ${startDateTime}`);
+      console.log(`Calculated endDateTime (CT): ${endDateTime}`);
+      console.log(`Storing start_time (UTC): ${startUTC}`);
+      console.log(`Storing end_time (UTC): ${endUTC}`);
+      
+      // Create pending appointment record with UTC times
       const appointmentData = {
         client_phone: formattedPhone,
         service_type: serviceType,
         location_description: location,
         specific_address: specificAddress,
-        start_time: `${startDateTime} America/Chicago`,
-        end_time: `${endDateTime} America/Chicago`,
+        start_time: startUTC,
+        end_time: endUTC,
         duration_minutes: duration,
         status: 'pending_confirmation',
         notes: notes,
@@ -1925,7 +2068,13 @@ router.get('/get-services', async (req, res) => {
         appointmentId: appointment[0].id,
         appointment: appointment[0],
         client: client,
-        message: 'Pending appointment stored successfully. Awaiting confirmation.'
+        message: 'Pending appointment stored successfully. Awaiting confirmation.',
+        // Return times in Central Time for user display
+        appointmentTime: {
+          start: startDateTime,
+          end: endDateTime,
+          timezone: 'America/Chicago'
+        }
       });
     } catch (e) {
       console.error('Error in store-pending-appointment:', e);
@@ -2237,3 +2386,7 @@ router.get('/get-services', async (req, res) => {
   });
 
 module.exports = router;
+
+// Export helper functions for testing
+module.exports.convertCTtoUTC = convertCTtoUTC;
+module.exports.convertUTCtoCT = convertUTCtoCT;
