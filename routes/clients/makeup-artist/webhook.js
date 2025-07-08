@@ -2380,6 +2380,563 @@ router.get('/get-services', async (req, res) => {
     }
   });
 
+  // Enhanced conversation history endpoint for webhook.js
+// Add this to your routes/clients/makeup-artist/webhook.js file
+
+// Enhanced conversation history with AI-powered context analysis
+router.get('/conversation/history-with-context', async (req, res) => {
+  const { phoneNumber, limit = 30 } = req.query;
+  
+  if (!phoneNumber) {
+    return res.status(400).json({ 
+      success: false, 
+      error: 'Phone number is required' 
+    });
+  }
+  
+  try {
+    // Format phone number
+    let formattedPhone = phoneNumber;
+    const digits = formattedPhone.replace(/\D/g, '');
+    if (!formattedPhone.startsWith('+')) {
+      formattedPhone = digits.length === 10 ? `+1${digits}` : `+${digits}`;
+    }
+    
+    // Get conversation session and messages directly from database for better performance
+    const { data: sessionData, error: sessionError } = await supabase
+      .from('conversation_sessions')
+      .select('id, created_at, last_active')
+      .eq('phone_number', formattedPhone)
+      .single();
+    
+    let history = [];
+    let sessionInfo = null;
+    
+    if (sessionData && !sessionError) {
+      sessionInfo = sessionData;
+      
+      // Get messages for this session
+      const { data: messages, error: messagesError } = await supabase
+        .from('conversation_messages')
+        .select('id, role, content, metadata, created_at, temp_messages')
+        .eq('session_id', sessionData.id)
+        .order('created_at', { ascending: true })
+        .limit(parseInt(limit));
+      
+      if (!messagesError && messages) {
+        history = messages;
+      }
+    }
+    
+    // Get client info for additional context
+    const { data: clientData, error: clientError } = await supabase
+      .from('clients')
+      .select('*')
+      .eq('phone_number', formattedPhone)
+      .single();
+    
+    const client = clientData || null;
+    
+    // Get pending appointments for context
+    const { data: pendingAppointments, error: appointmentsError } = await supabase
+      .from('appointments')
+      .select('*')
+      .eq('client_phone', formattedPhone)
+      .in('status', ['pending_confirmation', 'pending', 'confirmed'])
+      .gte('start_time', new Date().toISOString())
+      .order('start_time', { ascending: true });
+    
+    // Get recent completed appointments for relationship context
+    const { data: recentAppointments, error: recentError } = await supabase
+      .from('appointments')
+      .select('service_type, start_time, status')
+      .eq('client_phone', formattedPhone)
+      .in('status', ['completed'])
+      .order('start_time', { ascending: false })
+      .limit(3);
+    
+    // Analyze conversation context
+    const contextAnalysis = analyzeConversationContext(
+      history || [], 
+      client, 
+      pendingAppointments || [], 
+      recentAppointments || [],
+      sessionInfo
+    );
+    
+    return res.status(200).json({
+      success: true,
+      rawHistory: history || [],
+      conversationContext: contextAnalysis.context,
+      responseGuidance: contextAnalysis.guidance,
+      relationshipMemory: contextAnalysis.relationship,
+      sessionInfo: {
+        sessionId: sessionInfo?.id || null,
+        sessionCreated: sessionInfo?.created_at || null,
+        lastActive: sessionInfo?.last_active || null,
+        conversationAge: sessionInfo ? Math.floor((new Date() - new Date(sessionInfo.created_at)) / (1000 * 60 * 60)) : null // hours
+      },
+      count: (history || []).length
+    });
+  } catch (e) {
+    console.error('Error in enhanced conversation history:', e);
+    return res.status(500).json({ 
+      success: false, 
+      error: e.message 
+    });
+  }
+});
+
+// AI-powered conversation context analysis
+function analyzeConversationContext(messages, client, pendingAppointments, recentAppointments = [], sessionInfo = null) {
+  const analysis = {
+    context: {},
+    guidance: {},
+    relationship: {}
+  };
+  
+  try {
+    // Join all message content for analysis
+    const conversationText = messages
+      .map(msg => `${msg.role}: ${msg.content}`)
+      .join('\n');
+    
+    // CONVERSATION CONTEXT ANALYSIS
+    analysis.context = {
+      questionsAlreadyAsked: extractQuestionsAsked(messages),
+      clientPreferences: extractClientPreferences(conversationText, client),
+      conversationFlow: analyzeConversationFlow(messages, pendingAppointments),
+      clientMood: analyzeClientMood(conversationText),
+      topicsDiscussed: extractTopicsDiscussed(conversationText),
+      conversationAge: sessionInfo ? Math.floor((new Date() - new Date(sessionInfo.created_at)) / (1000 * 60 * 60)) : 0, // hours
+      isActiveConversation: sessionInfo ? (new Date() - new Date(sessionInfo.last_active)) < (30 * 60 * 1000) : false // within 30 minutes
+    };
+    
+    // RESPONSE GUIDANCE
+    analysis.guidance = generateResponseGuidance(analysis.context, messages, recentAppointments);
+    
+    // RELATIONSHIP MEMORY
+    analysis.relationship = buildRelationshipMemory(client, messages, pendingAppointments, recentAppointments);
+    
+    return analysis;
+  } catch (error) {
+    console.error('Error in context analysis:', error);
+    // Return basic structure if analysis fails
+    return {
+      context: { questionsAlreadyAsked: [], clientPreferences: {} },
+      guidance: { toneToUse: "warm and professional" },
+      relationship: { isReturningClient: false }
+    };
+  }
+}
+
+// Extract what questions have been asked
+function extractQuestionsAsked(messages) {
+  const questions = [];
+  const questionPatterns = [
+    { pattern: /when.*(is|'s).*your.*(occasion|event|wedding|graduation|birthday)/i, type: 'date_time' },
+    { pattern: /what.*(occasion|event|celebrating)/i, type: 'occasion' },
+    { pattern: /where.*(location|address)/i, type: 'location' },
+    { pattern: /what.*(service|look|style).*prefer/i, type: 'service_preference' },
+    { pattern: /skin.*(type|tone|allergies)/i, type: 'skin_info' },
+    { pattern: /budget|price|cost|fee/i, type: 'pricing' },
+    { pattern: /would you like.*more|want.*know.*about/i, type: 'engagement_question' }
+  ];
+  
+  messages.forEach(msg => {
+    if (msg.role === 'assistant') {
+      questionPatterns.forEach(({ pattern, type }) => {
+        if (pattern.test(msg.content)) {
+          questions.push(type);
+        }
+      });
+    }
+  });
+  
+  return [...new Set(questions)]; // Remove duplicates
+}
+
+// Extract client preferences and details
+function extractClientPreferences(conversationText, client) {
+  const preferences = {};
+  
+  // Extract occasion
+  const occasionMatch = conversationText.match(/(?:wedding|graduation|birthday|anniversary|date night|photoshoot|prom|baby shower|business event)/i);
+  if (occasionMatch) preferences.occasion = occasionMatch[0].toLowerCase();
+  
+  // Extract service preferences
+  const serviceMatch = conversationText.match(/(?:minimalistic|soft party|bridal|natural|glam|editorial)/i);
+  if (serviceMatch) preferences.serviceStyle = serviceMatch[0].toLowerCase();
+  
+  // Extract budget concerns
+  preferences.budgetConcern = /budget|expensive|cost|affordable|cheap|price/i.test(conversationText);
+  
+  // Extract location/travel concerns
+  preferences.travelConcern = /travel|distance|far|location|address/i.test(conversationText);
+  
+  // Extract timing preferences
+  const timePreference = conversationText.match(/(?:morning|afternoon|evening|early|late)/i);
+  if (timePreference) preferences.timePreference = timePreference[0].toLowerCase();
+  
+  // Add client database info
+  if (client) {
+    if (client.skin_type) preferences.skinType = client.skin_type;
+    if (client.skin_tone) preferences.skinTone = client.skin_tone;
+    if (client.allergies) preferences.allergies = client.allergies;
+  }
+  
+  return preferences;
+}
+
+// Analyze conversation flow and stage
+function analyzeConversationFlow(messages, pendingAppointments) {
+  const flow = {
+    currentStage: 'greeting',
+    completedSteps: [],
+    nextLogicalStep: 'identify_occasion',
+    blockers: [],
+    hasDateTimeConfirmed: false,
+    hasServiceDiscussed: false,
+    hasAddressCollected: false,
+    hasPendingAppointment: (pendingAppointments && pendingAppointments.length > 0)
+  };
+  
+  const conversationText = messages.map(m => m.content).join(' ').toLowerCase();
+  
+  // Check completed steps
+  if (/hi|hello|i'm rihanna/i.test(conversationText)) {
+    flow.completedSteps.push('greeting');
+  }
+  
+  if (/wedding|graduation|birthday|anniversary|photoshoot|prom|baby shower/i.test(conversationText)) {
+    flow.completedSteps.push('occasion_identified');
+  }
+  
+  if (/\d{4}-\d{2}-\d{2}|\d{1,2}:\d{2}|monday|tuesday|wednesday|thursday|friday|saturday|sunday/i.test(conversationText)) {
+    flow.completedSteps.push('date_time_discussed');
+  }
+  
+  if (/available|availability|check.*schedule/i.test(conversationText)) {
+    flow.completedSteps.push('availability_checked');
+    flow.hasDateTimeConfirmed = true;
+  }
+  
+  if (/minimalistic|soft party|bridal|glam.*\$|service.*\$|price/i.test(conversationText)) {
+    flow.completedSteps.push('service_discussed');
+    flow.hasServiceDiscussed = true;
+  }
+  
+  if (/address|street|city|zip/i.test(conversationText)) {
+    flow.completedSteps.push('address_collected');
+    flow.hasAddressCollected = true;
+  }
+  
+  // Determine current stage
+  if (!flow.completedSteps.includes('greeting')) {
+    flow.currentStage = 'greeting';
+    flow.nextLogicalStep = 'warm_introduction';
+  } else if (!flow.completedSteps.includes('occasion_identified')) {
+    flow.currentStage = 'occasion_collection';
+    flow.nextLogicalStep = 'ask_about_occasion';
+  } else if (!flow.hasDateTimeConfirmed) {
+    flow.currentStage = 'date_collection';
+    flow.nextLogicalStep = 'collect_date_time';
+  } else if (!flow.hasServiceDiscussed) {
+    flow.currentStage = 'service_discussion';
+    flow.nextLogicalStep = 'recommend_services';
+  } else if (!flow.hasAddressCollected) {
+    flow.currentStage = 'address_collection';
+    flow.nextLogicalStep = 'collect_address';
+  } else {
+    flow.currentStage = 'booking_completion';
+    flow.nextLogicalStep = 'send_form_or_payment_info';
+  }
+  
+  return flow;
+}
+
+// Analyze client mood and communication style
+function analyzeClientMood(conversationText) {
+  const mood = {
+    enthusiasm: 'medium',
+    concerns: [],
+    communicationStyle: 'casual',
+    decisionReadiness: 'considering'
+  };
+  
+  // Detect enthusiasm
+  if (/excited|amazing|perfect|love|awesome|great/i.test(conversationText)) {
+    mood.enthusiasm = 'high';
+  } else if (/okay|sure|maybe|i guess/i.test(conversationText)) {
+    mood.enthusiasm = 'low';
+  }
+  
+  // Detect concerns
+  if (/expensive|budget|cost|afford/i.test(conversationText)) {
+    mood.concerns.push('pricing');
+  }
+  if (/far|travel|distance|location/i.test(conversationText)) {
+    mood.concerns.push('travel');
+  }
+  if (/time|schedule|busy|available/i.test(conversationText)) {
+    mood.concerns.push('scheduling');
+  }
+  
+  // Detect communication style
+  if (/please|thank you|would you mind/i.test(conversationText)) {
+    mood.communicationStyle = 'formal';
+  } else if (/yeah|yep|nah|lol|haha/i.test(conversationText)) {
+    mood.communicationStyle = 'very_casual';
+  }
+  
+  // Detect decision readiness
+  if (/book|schedule|let's do it|yes|sounds good/i.test(conversationText)) {
+    mood.decisionReadiness = 'ready';
+  } else if (/maybe|thinking|not sure|let me/i.test(conversationText)) {
+    mood.decisionReadiness = 'hesitant';
+  }
+  
+  return mood;
+}
+
+// Extract topics that have been discussed
+function extractTopicsDiscussed(conversationText) {
+  const topics = [];
+  const topicPatterns = [
+    { pattern: /price|cost|fee|budget|\$/i, topic: 'pricing' },
+    { pattern: /travel|distance|location|address/i, topic: 'travel_logistics' },
+    { pattern: /minimalistic|soft party|bridal|glam|service/i, topic: 'services' },
+    { pattern: /skin|allergies|tone|type/i, topic: 'skin_consultation' },
+    { pattern: /portfolio|instagram|photos|work/i, topic: 'portfolio' },
+    { pattern: /time|duration|how long/i, topic: 'service_duration' },
+    { pattern: /what.*included|process|preparation/i, topic: 'service_details' },
+    { pattern: /deposit|payment|venmo|zelle/i, topic: 'payment' }
+  ];
+  
+  topicPatterns.forEach(({ pattern, topic }) => {
+    if (pattern.test(conversationText)) {
+      topics.push(topic);
+    }
+  });
+  
+  return topics;
+}
+
+// Generate response guidance based on context
+function generateResponseGuidance(context, messages, recentAppointments = []) {
+  const guidance = {
+    toneToUse: 'warm and professional',
+    shouldReference: [],
+    shouldAvoid: [],
+    conversationOpeners: [],
+    naturalTransitions: '',
+    priorityAction: '',
+    clientType: 'new'
+  };
+  
+  // Determine client type
+  if (recentAppointments && recentAppointments.length > 0) {
+    guidance.clientType = 'returning';
+  } else if (context.conversationFlow?.hasPendingAppointment) {
+    guidance.clientType = 'pending_confirmation';
+  }
+  
+  // Determine tone based on mood and stage
+  if (context.clientMood?.enthusiasm === 'high') {
+    guidance.toneToUse = 'enthusiastic and supportive';
+  } else if (context.clientMood?.concerns?.includes('pricing')) {
+    guidance.toneToUse = 'understanding and reassuring about value';
+  } else if (context.conversationFlow?.currentStage === 'date_collection') {
+    guidance.toneToUse = 'friendly but focused on scheduling';
+  } else if (guidance.clientType === 'returning') {
+    guidance.toneToUse = 'warm and familiar, acknowledging past service';
+  }
+  
+  // What to reference
+  if (context.clientPreferences?.occasion) {
+    guidance.shouldReference.push(`their ${context.clientPreferences.occasion}`);
+  }
+  if (context.clientMood?.concerns?.length > 0) {
+    guidance.shouldReference.push('their concerns about ' + context.clientMood.concerns.join(' and '));
+  }
+  if (recentAppointments && recentAppointments.length > 0) {
+    guidance.shouldReference.push(`their previous ${recentAppointments[0].service_type} service`);
+  }
+  
+  // What to avoid
+  if (context.questionsAlreadyAsked.includes('engagement_question')) {
+    guidance.shouldAvoid.push('asking "want to know more?" again');
+  }
+  if (context.questionsAlreadyAsked.includes('pricing') && context.topicsDiscussed?.includes('pricing')) {
+    guidance.shouldAvoid.push('repeating pricing information');
+  }
+  if (context.questionsAlreadyAsked.length > 0) {
+    guidance.shouldAvoid.push('repeating questions about: ' + context.questionsAlreadyAsked.join(', '));
+  }
+  
+  // Generate conversation openers based on client type and context
+  if (guidance.clientType === 'returning') {
+    guidance.conversationOpeners.push('So great to hear from you again!');
+    if (recentAppointments.length > 0) {
+      guidance.conversationOpeners.push(`Hope you loved how the ${recentAppointments[0].service_type} turned out!`);
+    }
+  }
+  
+  if (context.clientPreferences?.occasion) {
+    guidance.conversationOpeners.push(`For your ${context.clientPreferences.occasion}...`);
+    guidance.conversationOpeners.push(`Since it's your ${context.clientPreferences.occasion}...`);
+  }
+  
+  if (context.clientMood?.concerns?.includes('pricing')) {
+    guidance.conversationOpeners.push('I totally understand the budget consideration...');
+    guidance.conversationOpeners.push('Let me help you find something that works within your budget...');
+  }
+  
+  // Priority action based on stage and context
+  if (context.conversationFlow?.currentStage === 'date_collection') {
+    guidance.priorityAction = 'Get specific date and time before discussing anything else';
+  } else if (context.conversationFlow?.currentStage === 'service_discussion') {
+    if (guidance.clientType === 'returning') {
+      guidance.priorityAction = 'Reference their previous service experience and recommend based on new occasion';
+    } else {
+      guidance.priorityAction = 'Use knowledge base to answer service questions and recommend based on occasion';
+    }
+  } else if (context.conversationFlow?.hasPendingAppointment) {
+    guidance.priorityAction = 'Address the pending appointment status first';
+  }
+  
+  // Natural transition guidance
+  if (context.conversationFlow?.nextLogicalStep) {
+    guidance.naturalTransitions = `Focus on ${context.conversationFlow.nextLogicalStep.replace('_', ' ')} as the next step`;
+  }
+  
+  return guidance;
+}
+
+// Build relationship memory
+function buildRelationshipMemory(client, messages, pendingAppointments, recentAppointments = []) {
+  const memory = {
+    isReturningClient: false,
+    previousServices: [],
+    knownPreferences: {},
+    communicationHistory: {},
+    currentBookingStatus: 'new_inquiry',
+    serviceHistory: []
+  };
+  
+  if (client) {
+    // Check if returning client based on status or existing appointments
+    memory.isReturningClient = client.status === 'Active' || recentAppointments.length > 0;
+    memory.clientStatus = client.status;
+    memory.lastContactDate = client.last_contact_date;
+    memory.clientSince = client.created_at;
+    
+    memory.knownPreferences = {
+      skinType: client.skin_type,
+      skinTone: client.skin_tone,
+      allergies: client.allergies,
+      preferredServiceType: client.preferred_service_type,
+      specialNotes: client.special_notes
+    };
+    
+    // Remove null/undefined values
+    Object.keys(memory.knownPreferences).forEach(key => {
+      if (memory.knownPreferences[key] === null || memory.knownPreferences[key] === undefined) {
+        delete memory.knownPreferences[key];
+      }
+    });
+  }
+  
+  // Process recent appointments for service history
+  if (recentAppointments && recentAppointments.length > 0) {
+    memory.serviceHistory = recentAppointments.map(apt => ({
+      serviceType: apt.service_type,
+      date: apt.start_time,
+      status: apt.status
+    }));
+    memory.previousServices = recentAppointments.map(apt => apt.service_type);
+    memory.lastServiceDate = recentAppointments[0].start_time;
+    memory.favoriteService = findMostFrequentService(recentAppointments);
+  }
+  
+  if (pendingAppointments && pendingAppointments.length > 0) {
+    memory.currentBookingStatus = pendingAppointments[0].status;
+    memory.pendingAppointmentDetails = {
+      serviceType: pendingAppointments[0].service_type,
+      date: pendingAppointments[0].start_time,
+      location: pendingAppointments[0].location_description,
+      specificAddress: pendingAppointments[0].specific_address,
+      notes: pendingAppointments[0].notes,
+      durationMinutes: pendingAppointments[0].duration_minutes
+    };
+  }
+  
+  // Analyze communication patterns from messages
+  if (messages && messages.length > 0) {
+    const messageCount = messages.length;
+    const avgMessageLength = messages.reduce((sum, msg) => sum + (msg.content ? msg.content.length : 0), 0) / messageCount;
+    
+    memory.communicationHistory = {
+      totalMessages: messageCount,
+      averageMessageLength: Math.round(avgMessageLength),
+      respondsWellTo: avgMessageLength > 100 ? 'detailed explanations' : 'concise answers',
+      preferredPace: messageCount > 10 ? 'detailed discussion' : 'quick decisions',
+      lastMessageDate: messages[messages.length - 1]?.created_at,
+      conversationStarter: messages[0]?.content || '',
+      recentTopics: extractRecentTopics(messages.slice(-5)) // Last 5 messages
+    };
+  } else {
+    memory.communicationHistory = {
+      totalMessages: 0,
+      averageMessageLength: 0,
+      respondsWellTo: 'concise answers',
+      preferredPace: 'quick decisions'
+    };
+  }
+  
+  return memory;
+}
+
+// Helper function to find most frequent service
+function findMostFrequentService(appointments) {
+  if (!appointments || appointments.length === 0) return null;
+  
+  const serviceCounts = {};
+  appointments.forEach(apt => {
+    if (apt.service_type) {
+      serviceCounts[apt.service_type] = (serviceCounts[apt.service_type] || 0) + 1;
+    }
+  });
+  
+  return Object.keys(serviceCounts).reduce((a, b) => 
+    serviceCounts[a] > serviceCounts[b] ? a : b
+  );
+}
+
+// Helper function to extract recent conversation topics
+function extractRecentTopics(recentMessages) {
+  if (!recentMessages || recentMessages.length === 0) return [];
+  
+  const topics = [];
+  const recentText = recentMessages.map(msg => msg.content).join(' ').toLowerCase();
+  
+  const topicKeywords = {
+    pricing: ['price', 'cost', 'fee', 'budget', '$'],
+    services: ['minimalistic', 'soft party', 'bridal', 'glam'],
+    scheduling: ['time', 'date', 'available', 'schedule'],
+    location: ['address', 'location', 'travel', 'where'],
+    skin: ['skin', 'allergies', 'tone', 'type']
+  };
+  
+  Object.keys(topicKeywords).forEach(topic => {
+    if (topicKeywords[topic].some(keyword => recentText.includes(keyword))) {
+      topics.push(topic);
+    }
+  });
+  
+  return topics;
+}
+
 module.exports = router;
 
 // Export helper functions for testing
