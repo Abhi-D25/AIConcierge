@@ -2937,6 +2937,359 @@ function extractRecentTopics(recentMessages) {
   return topics;
 }
 
+router.post('/store-pending-rescheduling', async (req, res) => {
+  const { 
+    clientPhone, 
+    clientName = "New Client", 
+    serviceType = "Makeup Service", 
+    location = "Client's Location", 
+    specificAddress,
+    newStartDateTime, 
+    duration = 60, 
+    notes = '', 
+    skinType,
+    skinTone,
+    allergies,
+    reason = '' // Reason for rescheduling
+  } = req.body;
+  
+  if (!clientPhone || !newStartDateTime) {
+    return res.status(400).json({ 
+      success: false, 
+      error: 'Client phone and new start date-time are required for rescheduling' 
+    });
+  }
+  
+  try {
+    // Format phone number
+    let formattedPhone = clientPhone;
+    const digits = formattedPhone.replace(/\D/g, '');
+    if (!formattedPhone.startsWith('+')) {
+      formattedPhone = digits.length === 10 ? `+1${digits}` : `+${digits}`;
+    }
+    
+    // Find existing pending or confirmed appointment to reschedule
+    const { data: existingAppointments, error: findError } = await supabase
+      .from('appointments')
+      .select('*')
+      .eq('client_phone', formattedPhone)
+      .in('status', ['pending_confirmation', 'pending', 'confirmed'])
+      .gte('start_time', new Date().toISOString()) // Only future appointments
+      .order('start_time', { ascending: true })
+      .limit(1);
+    
+    if (findError) {
+      console.error('Error finding existing appointment:', findError);
+      return res.status(500).json({ 
+        success: false, 
+        error: 'Failed to find existing appointment: ' + findError.message 
+      });
+    }
+    
+    if (!existingAppointments || existingAppointments.length === 0) {
+      return res.status(404).json({ 
+        success: false, 
+        error: 'No existing appointment found to reschedule' 
+      });
+    }
+    
+    const existingAppointment = existingAppointments[0];
+    console.log('Found existing appointment to reschedule:', existingAppointment.id);
+    
+    // Get or update client info
+    let client = await clientOps.getByPhoneNumber(formattedPhone);
+    
+    if (!client) {
+      console.log(`Creating new client: ${clientName} (${formattedPhone})`);
+      client = await clientOps.createOrUpdate({ 
+        phone_number: formattedPhone, 
+        name: clientName,
+        skin_type: skinType,
+        skin_tone: skinTone,
+        allergies: allergies,
+        status: 'Needs Confirmation'
+      });
+    } else {
+      // Update client status to 'Needs Confirmation' for rescheduling
+      const updateFields = { status: 'Needs Confirmation', updated_at: new Date().toISOString() };
+      if (clientName && clientName !== client.name) updateFields.name = clientName;
+      if (skinType && skinType !== client.skin_type) updateFields.skin_type = skinType;
+      if (skinTone && skinTone !== client.skin_tone) updateFields.skin_tone = skinTone;
+      if (allergies && allergies !== client.allergies) updateFields.allergies = allergies;
+      
+      const { data, error } = await supabase
+        .from('clients')
+        .update(updateFields)
+        .eq('phone_number', formattedPhone)
+        .select();
+        
+      if (!error && data[0]) {
+        client = data[0];
+      }
+    }
+    
+    // Calculate new end time in Central Time
+    const newEndDateTime = calculateEndTime(newStartDateTime, duration);
+    
+    // Store times in Central Time format for database
+    const startTimeForDB = convertCTtoUTC(newStartDateTime);
+    const endTimeForDB = convertCTtoUTC(newEndDateTime);
+    
+    console.log(`Rescheduling appointment ${existingAppointment.id}:`);
+    console.log(`Old time: ${existingAppointment.start_time} -> New time: ${startTimeForDB}`);
+    
+    // If existing appointment has Google Calendar event, we need to handle it
+    let cancelOldEvent = false;
+    if (existingAppointment.google_calendar_event_id && existingAppointment.status === 'confirmed') {
+      cancelOldEvent = true;
+    }
+    
+    // Update the existing appointment with new details
+    const rescheduleNotes = [
+      existingAppointment.notes || '',
+      `\n--- RESCHEDULED on ${new Date().toLocaleDateString()} ---`,
+      `Original time: ${convertUTCtoCT(existingAppointment.start_time)}`,
+      `New time: ${newStartDateTime}`,
+      reason ? `Reason: ${reason}` : '',
+      notes ? `New notes: ${notes}` : ''
+    ].filter(Boolean).join('\n').trim();
+    
+    const updateData = {
+      service_type: serviceType || existingAppointment.service_type,
+      location_description: location || existingAppointment.location_description,
+      specific_address: specificAddress || existingAppointment.specific_address,
+      start_time: startTimeForDB,
+      end_time: endTimeForDB,
+      duration_minutes: duration,
+      status: 'pending_confirmation', // Reset to pending for artist confirmation
+      notes: rescheduleNotes,
+      google_calendar_event_id: null, // Will be set when confirmed
+      updated_at: new Date().toISOString()
+    };
+    
+    const { data: updatedAppointment, error: updateError } = await supabase
+      .from('appointments')
+      .update(updateData)
+      .eq('id', existingAppointment.id)
+      .select();
+    
+    if (updateError) {
+      console.error('Error updating appointment for rescheduling:', updateError);
+      return res.status(500).json({ 
+        success: false, 
+        error: 'Failed to reschedule appointment: ' + updateError.message 
+      });
+    }
+    
+    // Cancel old Google Calendar event if it exists
+    if (cancelOldEvent) {
+      try {
+        // Get artist's calendar credentials
+        const { data: artist, error: artistError } = await supabase
+          .from('makeup_artists')
+          .select('*')
+          .single();
+        
+        if (artist?.refresh_token) {
+          const oauth2Client = createOAuth2Client(artist.refresh_token);
+          const calendar = google.calendar({ version: 'v3', auth: oauth2Client });
+          const calendarId = artist.selected_calendar_id || 'primary';
+          
+          await calendar.events.delete({
+            calendarId,
+            eventId: existingAppointment.google_calendar_event_id,
+            sendUpdates: 'all'
+          });
+          
+          console.log('Old Google Calendar event cancelled successfully');
+        }
+      } catch (calendarError) {
+        console.error('Warning: Could not cancel old calendar event:', calendarError);
+        // Don't fail the whole operation if calendar cleanup fails
+      }
+    }
+    
+    console.log('Appointment rescheduled successfully:', updatedAppointment[0].id);
+    
+    return res.status(200).json({
+      success: true,
+      action: 'reschedule',
+      appointmentId: updatedAppointment[0].id,
+      appointment: updatedAppointment[0],
+      client: client,
+      message: 'Appointment rescheduled successfully. Awaiting artist confirmation.',
+      originalTime: {
+        start: convertUTCtoCT(existingAppointment.start_time),
+        end: convertUTCtoCT(existingAppointment.end_time)
+      },
+      newTime: {
+        start: newStartDateTime,
+        end: newEndDateTime,
+        timezone: 'America/Chicago'
+      },
+      oldCalendarEventCancelled: cancelOldEvent
+    });
+  } catch (e) {
+    console.error('Error in store-pending-rescheduling:', e);
+    return res.status(500).json({ 
+      success: false, 
+      error: e.message 
+    });
+  }
+});
+
+router.post('/client-cancellation', async (req, res) => {
+  const { 
+    clientPhone, 
+    clientName,
+    reason = '',
+    appointmentId = null // Optional: specific appointment ID to cancel
+  } = req.body;
+  
+  if (!clientPhone) {
+    return res.status(400).json({ 
+      success: false, 
+      error: 'Client phone number is required for cancellation' 
+    });
+  }
+  
+  try {
+    // Format phone number
+    let formattedPhone = clientPhone;
+    const digits = formattedPhone.replace(/\D/g, '');
+    if (!formattedPhone.startsWith('+')) {
+      formattedPhone = digits.length === 10 ? `+1${digits}` : `+${digits}`;
+    }
+    
+    // Find appointment(s) to cancel
+    let appointmentQuery = supabase
+      .from('appointments')
+      .select('*')
+      .eq('client_phone', formattedPhone)
+      .in('status', ['pending_confirmation', 'pending', 'confirmed'])
+      .gte('start_time', new Date().toISOString()) // Only future appointments
+      .order('start_time', { ascending: true });
+    
+    // If specific appointment ID provided, filter by it
+    if (appointmentId) {
+      appointmentQuery = appointmentQuery.eq('id', appointmentId);
+    }
+    
+    const { data: appointmentsToCancel, error: findError } = await appointmentQuery;
+    
+    if (findError) {
+      console.error('Error finding appointments to cancel:', findError);
+      return res.status(500).json({ 
+        success: false, 
+        error: 'Failed to find appointments: ' + findError.message 
+      });
+    }
+    
+    if (!appointmentsToCancel || appointmentsToCancel.length === 0) {
+      return res.status(404).json({ 
+        success: false, 
+        error: appointmentId ? 'Appointment not found' : 'No upcoming appointments found to cancel'
+      });
+    }
+    
+    // For client-initiated cancellation, we'll cancel the next upcoming appointment
+    const appointmentToCancel = appointmentsToCancel[0];
+    console.log('Cancelling appointment:', appointmentToCancel.id);
+    
+    // Get artist's calendar credentials for Google Calendar cleanup
+    let calendarEventCancelled = false;
+    if (appointmentToCancel.google_calendar_event_id) {
+      try {
+        const { data: artist, error: artistError } = await supabase
+          .from('makeup_artists')
+          .select('*')
+          .single();
+        
+        if (artist?.refresh_token) {
+          const oauth2Client = createOAuth2Client(artist.refresh_token);
+          const calendar = google.calendar({ version: 'v3', auth: oauth2Client });
+          const calendarId = artist.selected_calendar_id || 'primary';
+          
+          await calendar.events.delete({
+            calendarId,
+            eventId: appointmentToCancel.google_calendar_event_id,
+            sendUpdates: 'all'
+          });
+          
+          calendarEventCancelled = true;
+          console.log('Google Calendar event cancelled successfully');
+        }
+      } catch (calendarError) {
+        console.error('Warning: Could not cancel calendar event:', calendarError);
+        // Continue with database update even if calendar fails
+      }
+    }
+    
+    // Update appointment status to cancelled
+    const cancellationNotes = [
+      appointmentToCancel.notes || '',
+      `\n--- CANCELLED BY CLIENT on ${new Date().toLocaleDateString()} ---`,
+      `Cancelled appointment: ${appointmentToCancel.service_type || 'Makeup Service'}`,
+      `Scheduled time: ${convertUTCtoCT(appointmentToCancel.start_time)}`,
+      reason ? `Reason: ${reason}` : 'No reason provided',
+      calendarEventCancelled ? 'Google Calendar event cancelled' : 'No calendar event to cancel'
+    ].filter(Boolean).join('\n').trim();
+    
+    const { data: cancelledAppointment, error: cancelError } = await supabase
+      .from('appointments')
+      .update({
+        status: 'cancelled',
+        notes: cancellationNotes,
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', appointmentToCancel.id)
+      .select();
+    
+    if (cancelError) {
+      console.error('Error cancelling appointment:', cancelError);
+      return res.status(500).json({ 
+        success: false, 
+        error: 'Failed to cancel appointment: ' + cancelError.message 
+      });
+    }
+    
+    // Update client status
+    const { data: updatedClient, error: clientError } = await supabase
+      .from('clients')
+      .update({ 
+        status: 'Lead', // Reset to Lead since they cancelled
+        status_notes: `Cancelled appointment on ${new Date().toLocaleDateString()}. Reason: ${reason || 'Not provided'}`,
+        updated_at: new Date().toISOString()
+      })
+      .eq('phone_number', formattedPhone)
+      .select();
+    
+    console.log('Appointment cancelled successfully by client');
+    
+    return res.status(200).json({
+      success: true,
+      action: 'cancel',
+      appointmentId: appointmentToCancel.id,
+      appointment: cancelledAppointment[0],
+      client: updatedClient?.[0] || null,
+      message: 'Appointment cancelled successfully',
+      cancelledTime: {
+        start: convertUTCtoCT(appointmentToCancel.start_time),
+        end: convertUTCtoCT(appointmentToCancel.end_time),
+        service: appointmentToCancel.service_type
+      },
+      calendarEventCancelled,
+      reason: reason || 'No reason provided'
+    });
+  } catch (e) {
+    console.error('Error in client-cancellation:', e);
+    return res.status(500).json({ 
+      success: false, 
+      error: e.message 
+    });
+  }
+});
+
 module.exports = router;
 
 // Export helper functions for testing
