@@ -3138,6 +3138,809 @@ router.post('/store-pending-rescheduling', async (req, res) => {
   }
 });
 
+// =============================================================================
+// CALENDAR MANAGEMENT ENDPOINTS - Add these to your webhook.js file
+// =============================================================================
+
+// 1. Block Calendar Period
+router.post('/block-calendar-period', async (req, res) => {
+  const { 
+    startDateTime, 
+    endDateTime, 
+    blockType = 'unavailable', 
+    reason = 'Blocked time', 
+    allDay = false 
+  } = req.body;
+  
+  console.log('Block calendar period request:', JSON.stringify(req.body, null, 2));
+  
+  // Validate required fields
+  if (!startDateTime || !endDateTime) {
+    return res.status(400).json({ 
+      success: false, 
+      error: 'Start and end date-time are required for blocking calendar' 
+    });
+  }
+  
+  try {
+    // Get artist's Google Calendar credentials
+    const { data: artist, error: artistError } = await supabase
+      .from('makeup_artists')
+      .select('*')
+      .single();
+    
+    if (artistError || !artist?.refresh_token) {
+      console.error('Makeup artist not found or not authorized:', artistError);
+      return res.status(404).json({ 
+        success: false, 
+        error: 'Makeup artist not found or not authorized' 
+      });
+    }
+    
+    // Create Google Calendar client
+    const oauth2Client = createOAuth2Client(artist.refresh_token);
+    const calendar = google.calendar({ version: 'v3', auth: oauth2Client });
+    const calendarId = artist.selected_calendar_id || 'primary';
+    
+    // Format block type for display
+    const blockTypeDisplay = blockType.replace('_', ' ').replace(/\b\w/g, l => l.toUpperCase());
+    
+    // Create event details for calendar block
+    const eventDetails = {
+      summary: `🚫 BLOCKED - ${blockTypeDisplay}`,
+      description: `Calendar blocked for: ${reason}\nBlock Type: ${blockTypeDisplay}\nCreated: ${new Date().toISOString()}`,
+      start: allDay ? 
+        { date: startDateTime.split('T')[0], timeZone: 'America/Chicago' } :
+        { dateTime: startDateTime, timeZone: 'America/Chicago' },
+      end: allDay ? 
+        { date: endDateTime.split('T')[0], timeZone: 'America/Chicago' } :
+        { dateTime: endDateTime, timeZone: 'America/Chicago' },
+      status: 'confirmed',
+      transparency: 'opaque', // Shows as busy
+      visibility: 'private'
+    };
+    
+    console.log('Creating calendar block with details:', JSON.stringify(eventDetails, null, 2));
+    
+    try {
+      // Create the calendar block event
+      const event = await calendar.events.insert({ 
+        calendarId, 
+        resource: eventDetails 
+      });
+      
+      console.log('Calendar block created successfully:', event.data.id);
+      
+      // Store the calendar block in database for tracking
+      const blockData = {
+        google_calendar_event_id: event.data.id,
+        block_type: blockType,
+        reason: reason,
+        start_time: convertCTtoUTC(startDateTime),
+        end_time: convertCTtoUTC(endDateTime),
+        all_day: allDay,
+        status: 'active'
+      };
+      
+      // Create calendar_blocks table entry
+      const { data: blockRecord, error: blockError } = await supabase
+        .from('calendar_blocks')
+        .insert(blockData)
+        .select();
+      
+      if (blockError) {
+        console.error('Error storing calendar block:', blockError);
+        // Don't fail the whole operation if database storage fails
+      }
+      
+      // Calculate duration for response
+      const startDate = new Date(startDateTime);
+      const endDate = new Date(endDateTime);
+      const durationHours = Math.round((endDate - startDate) / (1000 * 60 * 60));
+      const durationDays = Math.round(durationHours / 24);
+      
+      return res.status(200).json({
+        success: true,
+        action: 'block_calendar',
+        eventId: event.data.id,
+        eventLink: event.data.htmlLink,
+        blockRecord: blockRecord ? blockRecord[0] : null,
+        message: 'Calendar period blocked successfully',
+        blockDetails: {
+          type: blockTypeDisplay,
+          reason: reason,
+          start: startDateTime,
+          end: endDateTime,
+          allDay: allDay,
+          duration: {
+            hours: durationHours,
+            days: durationDays
+          }
+        }
+      });
+    } catch (calendarError) {
+      console.error('Google Calendar error:', calendarError);
+      return res.status(500).json({ 
+        success: false, 
+        error: 'Failed to block calendar period: ' + calendarError.message 
+      });
+    }
+  } catch (e) {
+    console.error('Error in block-calendar-period endpoint:', e);
+    return res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// 2. Get Calendar Information
+router.get('/get-calendar-info', async (req, res) => {
+  const { 
+    startDate, 
+    endDate, 
+    includeBlocks = true, 
+    includeAvailability = false 
+  } = req.query;
+  
+  console.log('Get calendar info request:', JSON.stringify(req.query, null, 2));
+  
+  // Validate required fields
+  if (!startDate || !endDate) {
+    return res.status(400).json({ 
+      success: false, 
+      error: 'Start and end dates are required' 
+    });
+  }
+  
+  try {
+    // Get artist's Google Calendar credentials
+    const { data: artist, error: artistError } = await supabase
+      .from('makeup_artists')
+      .select('*')
+      .single();
+    
+    if (artistError || !artist?.refresh_token) {
+      console.error('Makeup artist not found or not authorized:', artistError);
+      return res.status(404).json({ 
+        success: false, 
+        error: 'Makeup artist not found or not authorized' 
+      });
+    }
+    
+    // Create Google Calendar client
+    const oauth2Client = createOAuth2Client(artist.refresh_token);
+    const calendar = google.calendar({ version: 'v3', auth: oauth2Client });
+    const calendarId = artist.selected_calendar_id || 'primary';
+    
+    try {
+      // Get all events in the specified period
+      const response = await calendar.events.list({
+        calendarId,
+        timeMin: new Date(startDate).toISOString(),
+        timeMax: new Date(endDate).toISOString(),
+        timeZone: 'America/Chicago',
+        singleEvents: true,
+        orderBy: 'startTime',
+        maxResults: 250
+      });
+      
+      const events = response.data.items || [];
+      
+      // Separate appointments from blocks
+      const appointments = [];
+      const blocks = [];
+      
+      events.forEach(event => {
+        const eventData = {
+          id: event.id,
+          summary: event.summary || 'Untitled',
+          start: event.start?.dateTime || event.start?.date,
+          end: event.end?.dateTime || event.end?.date,
+          location: event.location,
+          description: event.description,
+          status: event.status
+        };
+        
+        // Check if it's a calendar block (starts with blocked indicator)
+        if (event.summary && event.summary.includes('BLOCKED')) {
+          blocks.push({
+            ...eventData,
+            blockType: extractBlockType(event.summary, event.description),
+            reason: extractBlockReason(event.description)
+          });
+        } else {
+          // It's a regular appointment
+          appointments.push(eventData);
+        }
+      });
+      
+      // Get appointments from database for additional context
+      const { data: dbAppointments, error: dbError } = await supabase
+        .from('appointments')
+        .select(`
+          *,
+          client:clients!appointments_client_phone_fkey(name, phone_number)
+        `)
+        .gte('start_time', startDate)
+        .lte('start_time', endDate)
+        .order('start_time', { ascending: true });
+      
+      // Enrich appointments with database info
+      const enrichedAppointments = appointments.map(gcalEvent => {
+        const dbMatch = dbAppointments?.find(dbApt => 
+          dbApt.google_calendar_event_id === gcalEvent.id
+        );
+        
+        if (dbMatch) {
+          return {
+            ...gcalEvent,
+            clientName: dbMatch.client?.name || 'Unknown Client',
+            clientPhone: dbMatch.client?.phone_number,
+            serviceType: dbMatch.service_type,
+            appointmentStatus: dbMatch.status,
+            locationDescription: dbMatch.location_description,
+            specificAddress: dbMatch.specific_address,
+            duration: dbMatch.duration_minutes,
+            notes: dbMatch.notes
+          };
+        }
+        
+        return gcalEvent;
+      });
+      
+      // Calculate availability windows if requested
+      let availabilityWindows = [];
+      if (includeAvailability === 'true') {
+        availabilityWindows = calculateAvailabilityWindows(
+          new Date(startDate), 
+          new Date(endDate), 
+          events
+        );
+      }
+      
+      return res.status(200).json({
+        success: true,
+        period: {
+          start: startDate,
+          end: endDate
+        },
+        appointments: enrichedAppointments,
+        blocks: includeBlocks === 'true' ? blocks : [],
+        availabilityWindows: availabilityWindows,
+        summary: {
+          totalAppointments: enrichedAppointments.length,
+          totalBlocks: blocks.length,
+          totalEvents: events.length,
+          availableHours: availabilityWindows.reduce((sum, window) => 
+            sum + (window.durationHours || 0), 0)
+        }
+      });
+    } catch (calendarError) {
+      console.error('Google Calendar error:', calendarError);
+      return res.status(500).json({ 
+        success: false, 
+        error: 'Failed to retrieve calendar information: ' + calendarError.message 
+      });
+    }
+  } catch (e) {
+    console.error('Error in get-calendar-info endpoint:', e);
+    return res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// 3. Get Calendar Blocks
+router.get('/get-calendar-blocks', async (req, res) => {
+  const { startDate, endDate, blockType } = req.query;
+  
+  try {
+    let query = supabase
+      .from('calendar_blocks')
+      .select('*')
+      .eq('status', 'active')
+      .order('start_time', { ascending: true });
+    
+    if (startDate) {
+      query = query.gte('start_time', startDate);
+    }
+    
+    if (endDate) {
+      query = query.lte('end_time', endDate);
+    }
+    
+    if (blockType) {
+      query = query.eq('block_type', blockType);
+    }
+    
+    const { data, error } = await query;
+    
+    if (error) {
+      throw error;
+    }
+    
+    // Format blocks for response
+    const formattedBlocks = (data || []).map(block => ({
+      id: block.id,
+      eventId: block.google_calendar_event_id,
+      type: block.block_type,
+      reason: block.reason,
+      start: convertUTCtoCT(block.start_time),
+      end: convertUTCtoCT(block.end_time),
+      allDay: block.all_day,
+      duration: calculateBlockDuration(block.start_time, block.end_time),
+      created: block.created_at
+    }));
+    
+    return res.status(200).json({
+      success: true,
+      blocks: formattedBlocks,
+      count: formattedBlocks.length,
+      summary: {
+        totalBlocks: formattedBlocks.length,
+        blockTypes: [...new Set(formattedBlocks.map(b => b.type))],
+        totalHoursBlocked: formattedBlocks.reduce((sum, block) => 
+          sum + (block.duration?.hours || 0), 0)
+      }
+    });
+  } catch (e) {
+    console.error('Error in get-calendar-blocks:', e);
+    return res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// 4. Remove Calendar Block
+router.post('/remove-calendar-block', async (req, res) => {
+  const { eventId, blockId } = req.body;
+  
+  if (!eventId && !blockId) {
+    return res.status(400).json({ 
+      success: false, 
+      error: 'Event ID or Block ID is required' 
+    });
+  }
+  
+  try {
+    // Get the block record
+    let blockRecord;
+    if (blockId) {
+      const { data, error } = await supabase
+        .from('calendar_blocks')
+        .select('*')
+        .eq('id', blockId)
+        .single();
+      
+      if (error || !data) {
+        return res.status(404).json({ 
+          success: false, 
+          error: 'Calendar block not found' 
+        });
+      }
+      blockRecord = data;
+    } else {
+      const { data, error } = await supabase
+        .from('calendar_blocks')
+        .select('*')
+        .eq('google_calendar_event_id', eventId)
+        .single();
+      
+      if (error || !data) {
+        return res.status(404).json({ 
+          success: false, 
+          error: 'Calendar block not found' 
+        });
+      }
+      blockRecord = data;
+    }
+    
+    // Get artist's calendar credentials
+    const { data: artist, error: artistError } = await supabase
+      .from('makeup_artists')
+      .select('*')
+      .single();
+    
+    if (artistError || !artist?.refresh_token) {
+      return res.status(404).json({ 
+        success: false, 
+        error: 'Makeup artist not found or not authorized' 
+      });
+    }
+    
+    // Create Google Calendar client
+    const oauth2Client = createOAuth2Client(artist.refresh_token);
+    const calendar = google.calendar({ version: 'v3', auth: oauth2Client });
+    const calendarId = artist.selected_calendar_id || 'primary';
+    
+    try {
+      // Delete from Google Calendar
+      await calendar.events.delete({
+        calendarId,
+        eventId: blockRecord.google_calendar_event_id
+      });
+      
+      console.log('Calendar block deleted from Google Calendar');
+      
+      // Update block status in database
+      const { data, error } = await supabase
+        .from('calendar_blocks')
+        .update({ 
+          status: 'deleted', 
+          updated_at: new Date().toISOString() 
+        })
+        .eq('id', blockRecord.id)
+        .select();
+      
+      if (error) {
+        console.error('Error updating block status:', error);
+        return res.status(500).json({ 
+          success: false, 
+          error: 'Block removed from calendar but failed to update database: ' + error.message 
+        });
+      }
+      
+      return res.status(200).json({
+        success: true,
+        action: 'remove_block',
+        eventId: blockRecord.google_calendar_event_id,
+        blockId: blockRecord.id,
+        message: 'Calendar block removed successfully',
+        removedBlock: {
+          type: blockRecord.block_type,
+          reason: blockRecord.reason,
+          period: {
+            start: convertUTCtoCT(blockRecord.start_time),
+            end: convertUTCtoCT(blockRecord.end_time)
+          }
+        }
+      });
+    } catch (calendarError) {
+      console.error('Google Calendar error:', calendarError);
+      return res.status(500).json({ 
+        success: false, 
+        error: 'Failed to remove calendar block: ' + calendarError.message 
+      });
+    }
+  } catch (e) {
+    console.error('Error in remove-calendar-block endpoint:', e);
+    return res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// 5. Get Availability Windows
+router.get('/get-availability-windows', async (req, res) => {
+  const { 
+    startDate, 
+    endDate, 
+    minDuration = 60, 
+    businessHoursOnly = true 
+  } = req.query;
+  
+  if (!startDate || !endDate) {
+    return res.status(400).json({ 
+      success: false, 
+      error: 'Start and end dates are required' 
+    });
+  }
+  
+  try {
+    // Get artist's calendar credentials
+    const { data: artist, error: artistError } = await supabase
+      .from('makeup_artists')
+      .select('*')
+      .single();
+    
+    if (artistError || !artist?.refresh_token) {
+      return res.status(404).json({ 
+        success: false, 
+        error: 'Makeup artist not found or not authorized' 
+      });
+    }
+    
+    // Create Google Calendar client
+    const oauth2Client = createOAuth2Client(artist.refresh_token);
+    const calendar = google.calendar({ version: 'v3', auth: oauth2Client });
+    const calendarId = artist.selected_calendar_id || 'primary';
+    
+    try {
+      // Get all events (appointments and blocks) in the period
+      const response = await calendar.events.list({
+        calendarId,
+        timeMin: new Date(startDate).toISOString(),
+        timeMax: new Date(endDate).toISOString(),
+        timeZone: 'America/Chicago',
+        singleEvents: true,
+        orderBy: 'startTime',
+        maxResults: 250
+      });
+      
+      const events = response.data.items || [];
+      
+      // Calculate availability windows
+      const availabilityWindows = calculateDetailedAvailability(
+        new Date(startDate),
+        new Date(endDate),
+        events,
+        parseInt(minDuration),
+        businessHoursOnly === 'true'
+      );
+      
+      return res.status(200).json({
+        success: true,
+        period: {
+          start: startDate,
+          end: endDate
+        },
+        availabilityWindows,
+        summary: {
+          totalWindows: availabilityWindows.length,
+          totalAvailableHours: availabilityWindows.reduce((sum, window) => 
+            sum + window.durationHours, 0),
+          longestWindow: availabilityWindows.reduce((max, window) => 
+            window.durationHours > (max?.durationHours || 0) ? window : max, null)
+        },
+        filters: {
+          minDuration: parseInt(minDuration),
+          businessHoursOnly: businessHoursOnly === 'true'
+        }
+      });
+    } catch (calendarError) {
+      console.error('Google Calendar error:', calendarError);
+      return res.status(500).json({ 
+        success: false, 
+        error: 'Failed to calculate availability: ' + calendarError.message 
+      });
+    }
+  } catch (e) {
+    console.error('Error in get-availability-windows endpoint:', e);
+    return res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// =============================================================================
+// HELPER FUNCTIONS FOR CALENDAR OPERATIONS
+// =============================================================================
+
+// Extract block type from calendar event
+function extractBlockType(summary, description) {
+  const summaryLower = summary.toLowerCase();
+  
+  if (summaryLower.includes('vacation')) return 'vacation';
+  if (summaryLower.includes('personal')) return 'personal';
+  if (summaryLower.includes('maintenance')) return 'maintenance';
+  if (summaryLower.includes('travel')) return 'travel';
+  if (summaryLower.includes('sick')) return 'sick';
+  
+  // Check description for block type
+  if (description) {
+    const descLower = description.toLowerCase();
+    if (descLower.includes('block type: vacation')) return 'vacation';
+    if (descLower.includes('block type: personal')) return 'personal';
+    if (descLower.includes('block type: maintenance')) return 'maintenance';
+    if (descLower.includes('block type: travel')) return 'travel';
+    if (descLower.includes('block type: sick')) return 'sick';
+  }
+  
+  return 'unavailable'; // Default
+}
+
+// Extract block reason from description
+function extractBlockReason(description) {
+  if (!description) return 'No reason specified';
+  
+  const reasonMatch = description.match(/Calendar blocked for: ([^\n]+)/);
+  if (reasonMatch) {
+    return reasonMatch[1];
+  }
+  
+  return description.split('\n')[0] || 'No reason specified';
+}
+
+// Calculate duration of a calendar block
+function calculateBlockDuration(startTime, endTime) {
+  const start = new Date(startTime);
+  const end = new Date(endTime);
+  const durationMs = end - start;
+  
+  const hours = Math.round(durationMs / (1000 * 60 * 60) * 10) / 10;
+  const days = Math.round(hours / 24 * 10) / 10;
+  
+  return {
+    hours,
+    days,
+    formatted: hours < 24 ? `${hours} hours` : `${days} days`
+  };
+}
+
+// Calculate basic availability windows
+function calculateAvailabilityWindows(startDate, endDate, events) {
+  const windows = [];
+  const businessStart = 9; // 9 AM
+  const businessEnd = 18; // 6 PM
+  
+  // Sort events by start time
+  const sortedEvents = events
+    .filter(event => event.start?.dateTime || event.start?.date)
+    .sort((a, b) => {
+      const aStart = new Date(a.start.dateTime || a.start.date);
+      const bStart = new Date(b.start.dateTime || b.start.date);
+      return aStart - bStart;
+    });
+  
+  let currentDate = new Date(startDate);
+  const endDateObj = new Date(endDate);
+  
+  while (currentDate <= endDateObj) {
+    // Skip weekends (optional - remove if MUA works weekends)
+    const dayOfWeek = currentDate.getDay();
+    if (dayOfWeek === 0 || dayOfWeek === 6) {
+      currentDate.setDate(currentDate.getDate() + 1);
+      continue;
+    }
+    
+    // Get events for this day
+    const dayEvents = sortedEvents.filter(event => {
+      const eventStart = new Date(event.start.dateTime || event.start.date);
+      return eventStart.toDateString() === currentDate.toDateString();
+    });
+    
+    // Calculate availability for this day
+    let dayStart = new Date(currentDate);
+    dayStart.setHours(businessStart, 0, 0, 0);
+    
+    const dayEnd = new Date(currentDate);
+    dayEnd.setHours(businessEnd, 0, 0, 0);
+    
+    let currentTime = new Date(dayStart);
+    
+    for (const event of dayEvents) {
+      const eventStart = new Date(event.start.dateTime || event.start.date);
+      const eventEnd = new Date(event.end.dateTime || event.end.date);
+      
+      // If there's a gap before this event
+      if (currentTime < eventStart) {
+        const availableEnd = eventStart < dayEnd ? eventStart : dayEnd;
+        const durationMs = availableEnd - currentTime;
+        const durationHours = durationMs / (1000 * 60 * 60);
+        
+        if (durationHours >= 1) { // At least 1 hour window
+          windows.push({
+            start: currentTime.toISOString(),
+            end: availableEnd.toISOString(),
+            durationHours: Math.round(durationHours * 2) / 2,
+            date: currentDate.toDateString()
+          });
+        }
+      }
+      
+      // Move current time to after this event
+      currentTime = new Date(Math.max(currentTime, eventEnd));
+    }
+    
+    // Check for availability after last event
+    if (currentTime < dayEnd) {
+      const durationMs = dayEnd - currentTime;
+      const durationHours = durationMs / (1000 * 60 * 60);
+      
+      if (durationHours >= 1) {
+        windows.push({
+          start: currentTime.toISOString(),
+          end: dayEnd.toISOString(),
+          durationHours: Math.round(durationHours * 2) / 2,
+          date: currentDate.toDateString()
+        });
+      }
+    }
+    
+    currentDate.setDate(currentDate.getDate() + 1);
+  }
+  
+  return windows;
+}
+
+// Calculate detailed availability with more options
+function calculateDetailedAvailability(startDate, endDate, events, minDuration, businessHoursOnly) {
+  const windows = [];
+  const businessStart = businessHoursOnly ? 9 : 0;
+  const businessEnd = businessHoursOnly ? 18 : 24;
+  
+  // Sort events by start time
+  const sortedEvents = events
+    .filter(event => event.start?.dateTime || event.start?.date)
+    .sort((a, b) => {
+      const aStart = new Date(a.start.dateTime || a.start.date);
+      const bStart = new Date(b.start.dateTime || b.start.date);
+      return aStart - bStart;
+    });
+  
+  let currentDate = new Date(startDate);
+  const endDateObj = new Date(endDate);
+  
+  while (currentDate <= endDateObj) {
+    // Skip weekends if business hours only
+    const dayOfWeek = currentDate.getDay();
+    if (businessHoursOnly && (dayOfWeek === 0 || dayOfWeek === 6)) {
+      currentDate.setDate(currentDate.getDate() + 1);
+      continue;
+    }
+    
+    // Get events for this day
+    const dayEvents = sortedEvents.filter(event => {
+      const eventStart = new Date(event.start.dateTime || event.start.date);
+      return eventStart.toDateString() === currentDate.toDateString();
+    });
+    
+    // Calculate availability for this day
+    let dayStart = new Date(currentDate);
+    dayStart.setHours(businessStart, 0, 0, 0);
+    
+    const dayEnd = new Date(currentDate);
+    dayEnd.setHours(businessEnd, 0, 0, 0);
+    
+    let currentTime = new Date(dayStart);
+    
+    for (const event of dayEvents) {
+      const eventStart = new Date(event.start.dateTime || event.start.date);
+      const eventEnd = new Date(event.end.dateTime || event.end.date);
+      
+      // If there's a gap before this event
+      if (currentTime < eventStart) {
+        const availableEnd = eventStart < dayEnd ? eventStart : dayEnd;
+        const durationMs = availableEnd - currentTime;
+        const durationMinutes = durationMs / (1000 * 60);
+        const durationHours = durationMinutes / 60;
+        
+        if (durationMinutes >= minDuration) {
+          windows.push({
+            start: currentTime.toISOString(),
+            end: availableEnd.toISOString(),
+            durationMinutes: Math.floor(durationMinutes),
+            durationHours: Math.round(durationHours * 2) / 2,
+            date: currentDate.toDateString(),
+            dayOfWeek: currentDate.toLocaleDateString('en-US', { weekday: 'long' }),
+            timeSlot: formatTimeSlot(currentTime, availableEnd)
+          });
+        }
+      }
+      
+      // Move current time to after this event
+      currentTime = new Date(Math.max(currentTime, eventEnd));
+    }
+    
+    // Check for availability after last event
+    if (currentTime < dayEnd) {
+      const durationMs = dayEnd - currentTime;
+      const durationMinutes = durationMs / (1000 * 60);
+      const durationHours = durationMinutes / 60;
+      
+      if (durationMinutes >= minDuration) {
+        windows.push({
+          start: currentTime.toISOString(),
+          end: dayEnd.toISOString(),
+          durationMinutes: Math.floor(durationMinutes),
+          durationHours: Math.round(durationHours * 2) / 2,
+          date: currentDate.toDateString(),
+          dayOfWeek: currentDate.toLocaleDateString('en-US', { weekday: 'long' }),
+          timeSlot: formatTimeSlot(currentTime, dayEnd)
+        });
+      }
+    }
+    
+    currentDate.setDate(currentDate.getDate() + 1);
+  }
+  
+  return windows;
+}
+
+// Format time slot for display
+function formatTimeSlot(start, end) {
+  const formatTime = (date) => {
+    return date.toLocaleTimeString('en-US', {
+      hour: 'numeric',
+      minute: '2-digit',
+      hour12: true,
+      timeZone: 'America/Chicago'
+    });
+  };
+  
+  return `${formatTime(start)} - ${formatTime(end)}`;
+}
+
 module.exports = router;
 
 // Export helper functions for testing
